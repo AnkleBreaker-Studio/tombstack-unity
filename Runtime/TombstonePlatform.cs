@@ -6,6 +6,17 @@ namespace AnkleBreaker.Tombstone
     /// <summary>Maps Unity runtime info to the ingestion contract's os/arch whitelist.</summary>
     internal static class TombstonePlatform
     {
+        // An empty bundleVersion would serialize buildVersion:"" and fail the server's
+        // min(1) schema, 400ing (and silently dropping) every crash/event/heartbeat.
+        private const string FALLBACK_BUILD_VERSION = "0.0.0";
+
+        /// <summary>Project build version, guarded against an empty bundleVersion (never "").</summary>
+        internal static string BuildVersion()
+        {
+            var version = Application.version;
+            return string.IsNullOrEmpty(version) ? FALLBACK_BUILD_VERSION : version;
+        }
+
         internal static string Os()
         {
             switch (Application.platform)

@@ -2,6 +2,27 @@
 
 All notable changes to `com.anklebreaker.tombstone`.
 
+## [0.5.1] - 2026-06-10
+### Fixed — SDK hardening (audit)
+- **Empty bundleVersion no longer drops all telemetry**: `buildVersion` is now guarded
+  (`TombstonePlatform.BuildVersion()` returns `"0.0.0"` when `Application.version` is empty)
+  at every capture/cache site (Init and the heartbeat builder). Previously an empty
+  bundleVersion serialized `buildVersion:""`, failing the server's `min(1)` schema and silently
+  400ing every crash, event, and heartbeat.
+- **Bounded outbound queue**: the in-memory upload queue is capped at 256 (mirrors the native
+  worker). Beyond the cap the OLDEST non-crash payload is dropped; crash/bug (write-ahead)
+  payloads are preserved (they're persisted to disk and retry next launch). Prevents unbounded
+  growth when a game calls `TrackEvent` every frame while offline. Allocation-free below the cap.
+- **Monotonic crash dedupe clock**: the per-signature 60s dedupe window now times from
+  `Stopwatch.GetTimestamp()` (cached epoch) instead of `DateTime.UtcNow`, so a backward
+  system-clock or NTP jump can no longer suppress a genuinely new crash.
+- **Breadcrumb purge on consent revoke**: `SetConsent(false)` now clears the buffered breadcrumb
+  ring (true→false transition), so a pre-revoke trail can't attach to a crash captured after
+  consent is re-granted.
+- **Uploader 408 parity**: the standalone CLI uploader (`tools/lib/upload-classify.mjs`) now
+  retries HTTP 408 (keep) instead of dropping it, matching both SDKs.
+- No wire shapes changed — `tests/unity-contract.test.ts` still pins the ingest contract.
+
 ## [0.5.0] - 2026-06-10
 ### Added — full autonomy: after Init, "most cases" need zero further integration
 - **Wider auto-capture**: in addition to `Application.logMessageReceivedThreaded` (main +

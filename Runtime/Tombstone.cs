@@ -88,6 +88,10 @@ namespace AnkleBreaker.Tombstone
             new Dictionary<string, SignatureWindow>(StringComparer.Ordinal);
         private static readonly object _dedupeLock = new object();
 
+        // Dedupe timing uses a monotonic clock, not wall time: a backward system-clock or NTP
+        // jump must never suppress a genuinely new crash. Stopwatch ticks never run backward.
+        private static readonly long _dedupeEpochTicks = System.Diagnostics.Stopwatch.GetTimestamp();
+
         // Device/build context is cached on the main thread at Init: handleLog can run on any
         // thread (logMessageReceivedThreaded) and Unity APIs are not safe off the main thread.
         private static string _buildVersion = "unknown";
@@ -149,7 +153,7 @@ namespace AnkleBreaker.Tombstone
                 }
                 _gameToken = gameToken;
                 _endpoint = endpoint.TrimEnd('/');
-                _buildVersion = Application.version;
+                _buildVersion = TombstonePlatform.BuildVersion();
                 _os = TombstonePlatform.Os();
                 _arch = TombstonePlatform.Arch();
                 _sessionId = Guid.NewGuid().ToString("N");
@@ -201,12 +205,16 @@ namespace AnkleBreaker.Tombstone
         /// <param name="granted">True once the player has accepted telemetry.</param>
         public static void SetConsent(bool granted)
         {
+            bool wasGranted = _consent;
             _consent = granted;
             try
             {
                 // Consent arriving after Init starts the deferred session tracking (marker
                 // write + unclean-shutdown report) exactly once.
                 if (granted && _initialized) startSessionTracking();
+                // Consent revoked: purge buffered breadcrumbs so the pre-revoke trail can't
+                // attach to a crash captured after consent is re-granted (GDPR scoping).
+                else if (!granted && wasGranted) clearBreadcrumbs();
             }
             catch (Exception e)
             {
@@ -404,20 +412,20 @@ namespace AnkleBreaker.Tombstone
         /// </summary>
         private static bool isDuplicateCrash(string signature, string condition)
         {
-            var now = DateTime.UtcNow;
+            var now = monotonicSeconds();
             int suppressedCount;
             lock (_dedupeLock)
             {
                 if (_recentSignatures.TryGetValue(signature, out var window))
                 {
-                    if ((now - window.LastSentUtc).TotalSeconds < CRASH_DEDUPE_WINDOW_SECONDS)
+                    if (now - window.LastSentSeconds < CRASH_DEDUPE_WINDOW_SECONDS)
                     {
                         window.Suppressed++;
                         suppressedCount = window.Suppressed;
                     }
                     else
                     {
-                        window.LastSentUtc = now;
+                        window.LastSentSeconds = now;
                         window.Suppressed = 0;
                         return false;
                     }
@@ -425,7 +433,7 @@ namespace AnkleBreaker.Tombstone
                 else
                 {
                     if (_recentSignatures.Count >= MAX_TRACKED_SIGNATURES) _recentSignatures.Clear();
-                    _recentSignatures[signature] = new SignatureWindow { LastSentUtc = now };
+                    _recentSignatures[signature] = new SignatureWindow { LastSentSeconds = now };
                     return false;
                 }
             }
@@ -559,6 +567,17 @@ namespace AnkleBreaker.Tombstone
             }
         }
 
+        /// <summary>Drop the buffered breadcrumb trail (consent revoked). Resets the ring without
+        /// allocating; preallocated slots are reused on the next record.</summary>
+        private static void clearBreadcrumbs()
+        {
+            lock (_breadcrumbLock)
+            {
+                _breadcrumbHead = 0;
+                _breadcrumbCount = 0;
+            }
+        }
+
         /// <summary>Snapshot the buffered breadcrumbs oldest→newest (null when empty). Copies the
         /// entries so the ring can keep mutating; only runs on the rare crash/bug path.</summary>
         private static Breadcrumb[] snapshotBreadcrumbs()
@@ -628,6 +647,11 @@ namespace AnkleBreaker.Tombstone
 
         private static string nowIso() => DateTime.UtcNow.ToString("yyyy-MM-ddTHH:mm:ss.fffZ");
 
+        /// <summary>Seconds elapsed on the monotonic clock since the dedupe epoch (cached at load).</summary>
+        private static double monotonicSeconds() =>
+            (System.Diagnostics.Stopwatch.GetTimestamp() - _dedupeEpochTicks)
+            / (double)System.Diagnostics.Stopwatch.Frequency;
+
         private static string truncate(string value, int max)
         {
             if (string.IsNullOrEmpty(value)) return value;
@@ -636,10 +660,10 @@ namespace AnkleBreaker.Tombstone
 
         private static string nullIfEmpty(string value) => string.IsNullOrEmpty(value) ? null : value;
 
-        /// <summary>Mutable dedupe slot: when this signature last reported + repeats since.</summary>
+        /// <summary>Mutable dedupe slot: monotonic seconds when this signature last reported + repeats since.</summary>
         private sealed class SignatureWindow
         {
-            public DateTime LastSentUtc;
+            public double LastSentSeconds;
             public int Suppressed;
         }
     }

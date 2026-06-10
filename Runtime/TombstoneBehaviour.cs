@@ -38,6 +38,9 @@ namespace AnkleBreaker.Tombstone
         private const float RETRY_BASE_DELAY_SECONDS = 2f; // 2s, 4s, 8s, 16s, 32s
         private const int MAX_CONCURRENT_UPLOADS = 4;
         private const int MAX_PERSISTED_FILES = 64;
+        // Soft cap on the in-memory outbound queue (mirrors the native worker's bounded
+        // queue). A game spamming TrackEvent while offline must not grow it without bound.
+        private const int MAX_OUTBOUND_QUEUE = 256;
         private const float MIN_HEARTBEAT_INTERVAL_SECONDS = 15f;
         private const float MAX_HEARTBEAT_INTERVAL_SECONDS = 600f;
         private const long HTTP_REQUEST_TIMEOUT = 408;
@@ -102,7 +105,38 @@ namespace AnkleBreaker.Tombstone
         {
             var item = PendingUpload.Post(path, json, durability, null, requestLog, logFromPreviousSession);
             if (durability == UploadDurability.WriteAhead) persist(item);
+            enqueueOutbound(item);
+        }
+
+        /// <summary>
+        /// Enqueue an outbound item under a soft cap (mirrors the native worker's bounded queue).
+        /// At capacity the OLDEST non-crash item is dropped; crash/bug (write-ahead) payloads are
+        /// preserved — they're already persisted to disk and retry on the next launch. Thread-safe.
+        /// Allocation-free in steady state: no eviction work happens below the cap.
+        /// </summary>
+        private static void enqueueOutbound(PendingUpload item)
+        {
+            if (_outbound.Count >= MAX_OUTBOUND_QUEUE) dropOldestNonCrash();
             _outbound.Enqueue(item);
+        }
+
+        /// <summary>Drop the oldest non-crash payload to bound the queue. Crash/bug items pulled
+        /// from the front are re-enqueued (preserved, since they're durable on disk); the first
+        /// non-crash item found is dropped. Bounded by the current size so it always terminates.</summary>
+        private static void dropOldestNonCrash()
+        {
+            int scan = _outbound.Count;
+            for (int i = 0; i < scan; i++)
+            {
+                if (!_outbound.TryDequeue(out var item)) return;
+                if (item.Durability == UploadDurability.WriteAhead)
+                {
+                    _outbound.Enqueue(item); // preserve crashes/bugs (write-ahead persisted)
+                    continue;
+                }
+                TombstoneLog.Warn("outbound queue full; dropped oldest non-crash payload.");
+                return;
+            }
         }
 
         // Unity message — must stay PascalCase (engine-invoked). Allocates nothing when idle:
@@ -135,7 +169,7 @@ namespace AnkleBreaker.Tombstone
                         // Restored records came from an earlier run: a granted log presign must
                         // upload that run's preserved log, not this session's fresh one.
                         if (record.path == Tombstone.CRASHES_PATH) _hasRestoredCrash = true;
-                        _outbound.Enqueue(PendingUpload.Post(
+                        enqueueOutbound(PendingUpload.Post(
                             record.path, record.body, UploadDurability.WriteAhead, file,
                             record.requestLog, logFromPreviousSession: true));
                     }
@@ -176,7 +210,7 @@ namespace AnkleBreaker.Tombstone
                 {
                     sessionId = _sessionId,
                     occurredAtIso = DateTime.UtcNow.ToString("yyyy-MM-ddTHH:mm:ss.fffZ"),
-                    buildVersion = Application.version,
+                    buildVersion = TombstonePlatform.BuildVersion(),
                     os = TombstonePlatform.Os(),
                     arch = TombstonePlatform.Arch(),
                     userId = Tombstone.CurrentUserId,
@@ -314,7 +348,7 @@ namespace AnkleBreaker.Tombstone
                             ? TombstoneSessionLog.TryReadPreviousLog(out bytes)
                             : TombstoneSessionLog.TryReadCurrentLog(out bytes);
                         if (!ok) return;
-                        _outbound.Enqueue(PendingUpload.LogPut(url, bytes));
+                        enqueueOutbound(PendingUpload.LogPut(url, bytes));
                     }
                     catch (Exception e)
                     {
@@ -334,7 +368,7 @@ namespace AnkleBreaker.Tombstone
             float delay = RETRY_BASE_DELAY_SECONDS * (1 << item.Attempt);
             item.Attempt++;
             yield return new WaitForSeconds(delay);
-            _outbound.Enqueue(item);
+            enqueueOutbound(item);
         }
 
         /// <summary>Write a payload to the offline queue (bounded). Thread-safe, never throws.</summary>
