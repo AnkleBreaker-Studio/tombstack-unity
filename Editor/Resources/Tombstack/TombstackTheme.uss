@@ -1,0 +1,352 @@
+/* ============================================================
+   TOMBSTACK editor theme — forge-dark palette ported from
+   design-drop/app/tokens.css. Variables live on .tmb-root
+   (applied to every window root by TombstackEditorUi).
+   USS has no text-transform: heading text is uppercased in
+   UXML/C#; the "Oswald-ish" look = bold + letter-spacing.
+   ============================================================ */
+
+.tmb-root {
+    --tmb-bg-base: #0a0807;
+    --tmb-bg-900: #110d0a;
+    --tmb-bg-850: #15110c;
+    --tmb-bg-800: #1a150f;
+    --tmb-bg-750: #211a12;
+    --tmb-bg-700: #2a2117;
+    --tmb-line: rgba(245, 215, 170, 0.07);
+    --tmb-line-strong: rgba(245, 215, 170, 0.14);
+    --tmb-line-gold: rgba(245, 166, 35, 0.28);
+    --tmb-gold: #f5a623;
+    --tmb-gold-hi: #ffc861;
+    --tmb-gold-deep: #c97e1e;
+    --tmb-gold-wash: rgba(245, 166, 35, 0.10);
+    --tmb-red: #ff4438;
+    --tmb-red-wash: rgba(255, 68, 56, 0.12);
+    --tmb-green: #3ddc84;
+    --tmb-green-wash: rgba(61, 220, 132, 0.12);
+    --tmb-amber: #ffb74d;
+    --tmb-text-hi: #f6efe3;
+    --tmb-text: #cabfae;
+    --tmb-text-mid: #9c9182;
+    --tmb-text-dim: #756c5f;
+
+    background-color: var(--tmb-bg-base);
+    color: var(--tmb-text);
+    flex-grow: 1;
+}
+
+/* ——— Utilities ——— */
+.hidden { display: none; }
+
+/* ——— Type ——— */
+.tmb-wordmark {
+    color: var(--tmb-gold);
+    font-size: 18px;
+    -unity-font-style: bold;
+    letter-spacing: 6px;
+}
+.tmb-head {
+    color: var(--tmb-text-hi);
+    font-size: 12px;
+    -unity-font-style: bold;
+    letter-spacing: 3px;
+}
+.tmb-eyebrow {
+    color: var(--tmb-text-dim);
+    font-size: 10px;
+    -unity-font-style: bold;
+    letter-spacing: 4px;
+}
+.tmb-body { color: var(--tmb-text); font-size: 12px; white-space: normal; }
+.tmb-dim { color: var(--tmb-text-dim); font-size: 11px; white-space: normal; }
+.tmb-value {
+    color: var(--tmb-text-hi);
+    font-size: 22px;
+    -unity-font-style: bold;
+}
+
+/* ——— Layout blocks ——— */
+.tmb-page { flex-grow: 1; padding: 16px; }
+.tmb-header {
+    flex-direction: row;
+    align-items: center;
+    justify-content: space-between;
+    padding: 14px 16px;
+    background-color: var(--tmb-bg-900);
+    border-bottom-width: 1px;
+    border-bottom-color: var(--tmb-line-gold);
+}
+.tmb-card {
+    background-color: var(--tmb-bg-850);
+    border-width: 1px;
+    border-color: var(--tmb-line);
+    border-radius: 8px;
+    padding: 14px;
+    margin-bottom: 12px;
+}
+.tmb-card--gold { border-color: var(--tmb-line-gold); }
+.tmb-row { flex-direction: row; align-items: center; }
+.tmb-spacer { flex-grow: 1; }
+.tmb-divider {
+    height: 1px;
+    background-color: var(--tmb-line);
+    margin-top: 10px;
+    margin-bottom: 10px;
+}
+
+/* ——— Buttons ——— */
+.tmb-btn {
+    background-color: rgba(255, 255, 255, 0.02);
+    color: var(--tmb-text-hi);
+    border-width: 1px;
+    border-color: var(--tmb-line-strong);
+    border-radius: 5px;
+    padding: 8px 16px;
+    font-size: 11px;
+    -unity-font-style: bold;
+    letter-spacing: 2px;
+    transition: background-color 0.15s ease-out, border-color 0.15s ease-out, color 0.15s ease-out;
+}
+.tmb-btn:hover {
+    background-color: var(--tmb-gold-wash);
+    border-color: var(--tmb-line-gold);
+    color: var(--tmb-gold-hi);
+}
+.tmb-btn:active { background-color: var(--tmb-bg-750); }
+.tmb-btn--gold {
+    background-color: var(--tmb-gold);
+    color: #1a1206;
+    border-color: var(--tmb-gold-hi);
+}
+.tmb-btn--gold:hover {
+    background-color: var(--tmb-gold-hi);
+    border-color: var(--tmb-gold-hi);
+    color: #1a1206;
+}
+.tmb-btn--danger:hover {
+    background-color: var(--tmb-red-wash);
+    border-color: var(--tmb-red);
+    color: var(--tmb-red);
+}
+.tmb-btn:disabled { opacity: 0.45; }
+
+/* ——— Link label ——— */
+.tmb-link {
+    color: var(--tmb-gold);
+    font-size: 11px;
+    transition: color 0.15s ease-out;
+}
+.tmb-link:hover { color: var(--tmb-gold-hi); }
+
+/* ——— Inputs (TextField / DropdownField / Toggle / FloatField) ——— */
+.tmb-root TextField { margin: 4px 0; }
+.tmb-root TextField > Label,
+.tmb-root DropdownField > Label,
+.tmb-root FloatField > Label,
+.tmb-root Toggle > Label {
+    color: var(--tmb-text-mid);
+    font-size: 11px;
+    -unity-font-style: bold;
+    letter-spacing: 1px;
+    min-width: 110px;
+}
+.tmb-root TextField #unity-text-input,
+.tmb-root FloatField #unity-text-input {
+    background-color: var(--tmb-bg-800);
+    color: var(--tmb-text-hi);
+    border-width: 1px;
+    border-color: var(--tmb-line-strong);
+    border-radius: 5px;
+    padding: 6px 8px;
+}
+.tmb-root TextField #unity-text-input:focus,
+.tmb-root FloatField #unity-text-input:focus { border-color: var(--tmb-gold); }
+.tmb-root DropdownField { margin: 4px 0; }
+.tmb-root DropdownField > VisualElement {
+    background-color: var(--tmb-bg-800);
+    border-width: 1px;
+    border-color: var(--tmb-line-strong);
+    border-radius: 5px;
+}
+.tmb-root DropdownField > VisualElement:hover { border-color: var(--tmb-line-gold); }
+
+/* ——— Status ——— */
+.tmb-dot {
+    width: 8px;
+    height: 8px;
+    border-radius: 4px;
+    margin-right: 7px;
+    background-color: var(--tmb-text-dim);
+}
+.tmb-dot--ok { background-color: var(--tmb-green); }
+.tmb-dot--bad { background-color: var(--tmb-red); }
+.tmb-dot--warn { background-color: var(--tmb-amber); }
+
+.tmb-banner {
+    border-radius: 6px;
+    border-width: 1px;
+    padding: 9px 12px;
+    margin-bottom: 10px;
+}
+.tmb-banner--error {
+    background-color: var(--tmb-red-wash);
+    border-color: var(--tmb-red);
+    color: var(--tmb-red);
+}
+.tmb-banner--spike {
+    background-color: var(--tmb-red-wash);
+    border-color: var(--tmb-red);
+}
+.tmb-banner--info {
+    background-color: var(--tmb-gold-wash);
+    border-color: var(--tmb-line-gold);
+}
+
+/* ——— Tabs ——— */
+.tmb-tabs {
+    flex-direction: row;
+    border-bottom-width: 1px;
+    border-bottom-color: var(--tmb-line);
+    margin-bottom: 14px;
+}
+.tmb-tab {
+    background-color: rgba(0, 0, 0, 0);
+    color: var(--tmb-text-dim);
+    border-width: 0;
+    border-bottom-width: 2px;
+    border-bottom-color: rgba(0, 0, 0, 0);
+    border-radius: 0;
+    padding: 8px 14px;
+    margin-right: 4px;
+    font-size: 11px;
+    -unity-font-style: bold;
+    letter-spacing: 2px;
+    transition: color 0.15s ease-out, border-bottom-color 0.15s ease-out;
+}
+.tmb-tab:hover { color: var(--tmb-gold-hi); }
+.tmb-tab--active {
+    color: var(--tmb-gold);
+    border-bottom-color: var(--tmb-gold);
+}
+
+/* ——— Dashboard stats ——— */
+.tmb-stats { flex-direction: row; margin-bottom: 12px; }
+.tmb-stat {
+    flex-grow: 1;
+    flex-basis: 0;
+    background-color: var(--tmb-bg-850);
+    border-width: 1px;
+    border-color: var(--tmb-line);
+    border-radius: 8px;
+    padding: 12px;
+    margin-right: 10px;
+}
+.tmb-stat:hover { border-color: var(--tmb-line-gold); }
+.tmb-stat--last { margin-right: 0; }
+.tmb-stat__value--good { color: var(--tmb-green); }
+.tmb-stat__value--bad { color: var(--tmb-red); }
+
+/* ——— Signature rows ——— */
+.tmb-sig-row {
+    flex-direction: row;
+    align-items: center;
+    padding: 8px 10px;
+    border-bottom-width: 1px;
+    border-bottom-color: var(--tmb-line);
+    transition: background-color 0.12s ease-out;
+}
+.tmb-sig-row:hover { background-color: var(--tmb-gold-wash); }
+.tmb-sig-row__status {
+    width: 4px;
+    height: 26px;
+    border-radius: 2px;
+    margin-right: 10px;
+    background-color: var(--tmb-text-dim);
+}
+.tmb-sig-row__status--new { background-color: var(--tmb-red); }
+.tmb-sig-row__status--triaged { background-color: var(--tmb-amber); }
+.tmb-sig-row__status--resolved { background-color: var(--tmb-green); }
+.tmb-sig-row__hint {
+    flex-grow: 1;
+    flex-shrink: 1;
+    color: var(--tmb-text-hi);
+    font-size: 12px;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+.tmb-sig-row__count {
+    color: var(--tmb-gold-hi);
+    font-size: 12px;
+    -unity-font-style: bold;
+    margin-left: 10px;
+    min-width: 52px;
+    -unity-text-align: middle-right;
+}
+.tmb-sig-row__users {
+    color: var(--tmb-text-dim);
+    font-size: 11px;
+    margin-left: 10px;
+    min-width: 64px;
+    -unity-text-align: middle-right;
+}
+
+/* ——— Trend bars ——— */
+.tmb-trend {
+    flex-direction: row;
+    align-items: flex-end;
+    height: 70px;
+    padding: 6px 2px 0 2px;
+}
+.tmb-trend__bar {
+    flex-grow: 1;
+    flex-basis: 0;
+    margin: 0 1px;
+    min-height: 2px;
+    border-radius: 2px;
+    background-color: var(--tmb-gold-deep);
+    transition: background-color 0.12s ease-out;
+}
+.tmb-trend__bar:hover { background-color: var(--tmb-gold-hi); }
+.tmb-trend__bar--peak { background-color: var(--tmb-gold); }
+
+/* ——— Sign-in window ——— */
+.tmb-signin {
+    flex-grow: 1;
+    align-items: center;
+    justify-content: center;
+    padding: 24px;
+}
+.tmb-signin__panel {
+    width: 320px;
+    background-color: var(--tmb-bg-850);
+    border-width: 1px;
+    border-color: var(--tmb-line-gold);
+    border-radius: 10px;
+    padding: 22px;
+}
+.tmb-signin__panel TextField > Label { min-width: 70px; }
+
+/* ——— Loading dots ——— */
+.tmb-loading { color: var(--tmb-gold); font-size: 11px; letter-spacing: 2px; }
+
+/* ——— Live Tail ——— */
+.tmb-livetail {
+    flex-grow: 1;
+    margin-top: 10px;
+    background-color: var(--tmb-bg-900);
+    border-width: 1px;
+    border-color: var(--tmb-line);
+    border-radius: 6px;
+    padding: 4px 6px;
+}
+.tmb-livetail__row {
+    color: var(--tmb-text);
+    font-size: 11px;
+    -unity-font-style: normal;
+    padding: 2px 4px;
+    border-bottom-width: 1px;
+    border-bottom-color: var(--tmb-line);
+    white-space: normal;
+}
+.tmb-livetail__row:hover { background-color: var(--tmb-gold-wash); }

@@ -1,0 +1,25 @@
+<ui:UXML xmlns:ui="UnityEngine.UIElements" xmlns:uie="UnityEditor.UIElements">
+
+    <Style src="TombstackTheme.uss" />
+
+    <ui:VisualElement name="signin-root" class="tmb-signin">
+        <ui:VisualElement class="tmb-signin__panel">
+            <ui:Label text="TOMBSTACK" class="tmb-wordmark" style="margin-bottom: 2px;" />
+            <ui:Label text="CRASH TELEMETRY FOR GAMES" class="tmb-eyebrow" style="margin-bottom: 16px;" />
+
+            <ui:Label name="signin-error" text="" class="tmb-banner tmb-banner--error tmb-body hidden" />
+
+            <ui:TextField name="signin-email" label="EMAIL" />
+            <ui:TextField name="signin-password" label="PASSWORD" password="true" />
+
+            <ui:Button name="signin-submit" text="SIGN IN" class="tmb-btn tmb-btn--gold" style="margin-top: 14px;" />
+            <ui:Label name="signin-loading" text="CONNECTING…" class="tmb-loading hidden" style="margin-top: 8px; -unity-text-align: middle-center;" />
+
+            <ui:VisualElement class="tmb-divider" />
+            <ui:VisualElement class="tmb-row" style="justify-content: center;">
+                <ui:Label text="No account yet?" class="tmb-dim" style="margin-right: 6px;" />
+                <ui:Label name="signin-signup" text="Create an account" class="tmb-link" />
+            </ui:VisualElement>
+        </ui:VisualElement>
+    </ui:VisualElement>
+</ui:UXML>

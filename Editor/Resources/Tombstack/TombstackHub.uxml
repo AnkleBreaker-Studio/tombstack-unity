@@ -1,0 +1,117 @@
+<ui:UXML xmlns:ui="UnityEngine.UIElements" xmlns:uie="UnityEditor.UIElements">
+
+    <Style src="TombstackTheme.uss" />
+
+    <ui:VisualElement name="hub-root" style="flex-grow: 1;">
+
+        <ui:VisualElement class="tmb-header">
+            <ui:VisualElement class="tmb-row">
+                <ui:Label text="TOMBSTACK" class="tmb-wordmark" />
+                <ui:Label text="HUB" class="tmb-eyebrow" style="margin-left: 10px; margin-top: 4px;" />
+            </ui:VisualElement>
+            <ui:VisualElement class="tmb-row">
+                <ui:VisualElement name="hub-status-dot" class="tmb-dot" />
+                <ui:Label name="hub-status-text" text="SIGNED OUT" class="tmb-eyebrow" />
+            </ui:VisualElement>
+        </ui:VisualElement>
+
+        <!-- Signed-out state -->
+        <ui:VisualElement name="hub-signedout" class="tmb-page hidden">
+            <ui:VisualElement class="tmb-card tmb-card--gold">
+                <ui:Label text="CONNECT YOUR TOMBSTACK ACCOUNT" class="tmb-head" style="margin-bottom: 6px;" />
+                <ui:Label text="The plugin is inactive until you sign in. Crash capture, project linking, and the live dashboard all require a Tombstack account." class="tmb-body" style="margin-bottom: 12px;" />
+                <ui:Button name="hub-open-signin" text="SIGN IN" class="tmb-btn tmb-btn--gold" style="align-self: flex-start;" />
+            </ui:VisualElement>
+        </ui:VisualElement>
+
+        <!-- Signed-in state -->
+        <ui:VisualElement name="hub-signedin" class="tmb-page hidden">
+
+            <ui:VisualElement class="tmb-tabs">
+                <ui:Button name="hub-tab-connection" text="CONNECTION" class="tmb-tab tmb-tab--active" />
+                <ui:Button name="hub-tab-dashboard" text="DASHBOARD" class="tmb-tab" />
+            </ui:VisualElement>
+
+            <ui:Label name="hub-error" text="" class="tmb-banner tmb-banner--error tmb-body hidden" />
+
+            <!-- Connection tab -->
+            <ui:ScrollView name="hub-panel-connection" style="flex-grow: 1;">
+                <ui:VisualElement class="tmb-card">
+                    <ui:Label text="LINK THIS PROJECT" class="tmb-head" style="margin-bottom: 8px;" />
+                    <ui:Label text="Pick the studio and game this Unity project reports to. Linking mints a fresh SDK token and writes it into the TombstackConfig asset." class="tmb-dim" style="margin-bottom: 10px;" />
+                    <ui:DropdownField name="hub-studio" label="STUDIO" />
+                    <ui:DropdownField name="hub-game" label="GAME" />
+                    <ui:VisualElement class="tmb-row" style="margin-top: 10px;">
+                        <ui:Button name="hub-link" text="LINK THIS PROJECT" class="tmb-btn tmb-btn--gold" />
+                        <ui:Button name="hub-refresh-studios" text="REFRESH" class="tmb-btn" style="margin-left: 8px;" />
+                        <ui:Label name="hub-link-loading" text="WORKING…" class="tmb-loading hidden" style="margin-left: 10px;" />
+                    </ui:VisualElement>
+                </ui:VisualElement>
+
+                <ui:VisualElement class="tmb-card tmb-card--gold">
+                    <ui:Label text="CONNECTION STATUS" class="tmb-head" style="margin-bottom: 8px;" />
+                    <ui:VisualElement class="tmb-row" style="margin-bottom: 4px;">
+                        <ui:Label text="SIGNED IN AS" class="tmb-eyebrow" style="min-width: 110px;" />
+                        <ui:Label name="hub-email" text="—" class="tmb-body" />
+                    </ui:VisualElement>
+                    <ui:VisualElement class="tmb-row" style="margin-bottom: 4px;">
+                        <ui:Label text="LINKED GAME" class="tmb-eyebrow" style="min-width: 110px;" />
+                        <ui:Label name="hub-linked-game" text="Not linked" class="tmb-body" />
+                    </ui:VisualElement>
+                    <ui:VisualElement class="tmb-row" style="margin-bottom: 4px;">
+                        <ui:Label text="SDK TOKEN" class="tmb-eyebrow" style="min-width: 110px;" />
+                        <ui:Label name="hub-token-state" text="Missing" class="tmb-body" />
+                    </ui:VisualElement>
+                    <ui:VisualElement class="tmb-row" style="margin-bottom: 4px;">
+                        <ui:Label text="ENDPOINT" class="tmb-eyebrow" style="min-width: 110px;" />
+                        <ui:Label name="hub-endpoint" text="—" class="tmb-dim" />
+                    </ui:VisualElement>
+                    <ui:VisualElement class="tmb-divider" />
+                    <ui:VisualElement class="tmb-row">
+                        <ui:Button name="hub-unlink" text="UNLINK" class="tmb-btn tmb-btn--danger" />
+                        <ui:Button name="hub-open-web" text="OPEN DASHBOARD ↗" class="tmb-btn" style="margin-left: 8px;" />
+                    </ui:VisualElement>
+                </ui:VisualElement>
+            </ui:ScrollView>
+
+            <!-- Dashboard tab -->
+            <ui:ScrollView name="hub-panel-dashboard" class="hidden" style="flex-grow: 1;">
+                <ui:VisualElement class="tmb-row" style="margin-bottom: 10px;">
+                    <ui:Label name="dash-game-name" text="—" class="tmb-head" />
+                    <ui:VisualElement class="tmb-spacer" />
+                    <ui:Toggle name="dash-autorefresh" label="AUTO 60S" />
+                    <ui:Button name="dash-refresh" text="REFRESH" class="tmb-btn" style="margin-left: 8px;" />
+                </ui:VisualElement>
+
+                <ui:Label name="dash-status" text="" class="tmb-loading hidden" style="margin-bottom: 8px;" />
+                <ui:Label name="dash-spike" text="⚠ CRASH SPIKE DETECTED — crashes are trending well above baseline." class="tmb-banner tmb-banner--spike tmb-body hidden" />
+
+                <ui:VisualElement class="tmb-stats">
+                    <ui:VisualElement class="tmb-stat">
+                        <ui:Label text="CRASH-FREE" class="tmb-eyebrow" />
+                        <ui:Label name="dash-crashfree" text="—" class="tmb-value" />
+                    </ui:VisualElement>
+                    <ui:VisualElement class="tmb-stat">
+                        <ui:Label text="CRASHES · 24H" class="tmb-eyebrow" />
+                        <ui:Label name="dash-24h" text="—" class="tmb-value" />
+                    </ui:VisualElement>
+                    <ui:VisualElement class="tmb-stat tmb-stat--last">
+                        <ui:Label text="CRASHES · 7D" class="tmb-eyebrow" />
+                        <ui:Label name="dash-7d" text="—" class="tmb-value" />
+                    </ui:VisualElement>
+                </ui:VisualElement>
+
+                <ui:VisualElement class="tmb-card">
+                    <ui:Label text="30-DAY TREND" class="tmb-eyebrow" style="margin-bottom: 4px;" />
+                    <ui:VisualElement name="dash-trend" class="tmb-trend" />
+                </ui:VisualElement>
+
+                <ui:VisualElement class="tmb-card">
+                    <ui:Label text="TOP SIGNATURES" class="tmb-eyebrow" style="margin-bottom: 6px;" />
+                    <ui:VisualElement name="dash-signatures" />
+                    <ui:Label name="dash-signatures-empty" text="No crashes in this window. Forge on." class="tmb-dim hidden" />
+                </ui:VisualElement>
+            </ui:ScrollView>
+        </ui:VisualElement>
+    </ui:VisualElement>
+</ui:UXML>

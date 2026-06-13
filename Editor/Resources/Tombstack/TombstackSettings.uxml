@@ -1,0 +1,41 @@
+<ui:UXML xmlns:ui="UnityEngine.UIElements" xmlns:uie="UnityEditor.UIElements">
+
+    <Style src="TombstackTheme.uss" />
+
+    <ui:VisualElement name="settings-root" class="tmb-page">
+        <ui:Label text="TOMBSTACK" class="tmb-wordmark" style="margin-bottom: 12px;" />
+
+        <ui:Label name="set-status" text="" class="tmb-banner tmb-banner--info tmb-body hidden" />
+
+        <ui:VisualElement class="tmb-card">
+            <ui:Label text="ACCOUNT" class="tmb-head" style="margin-bottom: 8px;" />
+            <ui:VisualElement class="tmb-row" style="margin-bottom: 4px;">
+                <ui:Label text="SIGNED IN AS" class="tmb-eyebrow" style="min-width: 110px;" />
+                <ui:Label name="set-account" text="—" class="tmb-body" />
+            </ui:VisualElement>
+            <ui:VisualElement class="tmb-row" style="margin-bottom: 4px;">
+                <ui:Label text="LINKED GAME" class="tmb-eyebrow" style="min-width: 110px;" />
+                <ui:Label name="set-linked-game" text="Not linked" class="tmb-body" />
+            </ui:VisualElement>
+            <ui:VisualElement class="tmb-row" style="margin-top: 8px;">
+                <ui:Button name="set-open-hub" text="OPEN HUB" class="tmb-btn" />
+                <ui:Button name="set-unlink" text="UNLINK PROJECT" class="tmb-btn tmb-btn--danger" style="margin-left: 8px;" />
+                <ui:Button name="set-signout" text="SIGN OUT" class="tmb-btn tmb-btn--danger" style="margin-left: 8px;" />
+            </ui:VisualElement>
+        </ui:VisualElement>
+
+        <ui:VisualElement class="tmb-card">
+            <ui:Label text="ENDPOINT" class="tmb-head" style="margin-bottom: 8px;" />
+            <ui:Label text="Override the Tombstack base URL for self-hosted or staging tenants. Leave empty for the default. Re-link the project after changing it so the config asset picks up the new URL." class="tmb-dim" style="margin-bottom: 8px;" />
+            <ui:TextField name="set-endpoint" label="BASE URL" />
+            <ui:Button name="set-endpoint-apply" text="APPLY" class="tmb-btn" style="align-self: flex-start; margin-top: 6px;" />
+        </ui:VisualElement>
+
+        <ui:VisualElement class="tmb-card">
+            <ui:Label text="SDK DEFAULTS" class="tmb-head" style="margin-bottom: 8px;" />
+            <ui:Label text="Written into the TombstackConfig asset the game ships with." class="tmb-dim" style="margin-bottom: 8px;" />
+            <uie:FloatField name="set-heartbeat" label="HEARTBEAT (S)" />
+            <ui:Toggle name="set-consent" label="REQUIRE CONSENT" />
+        </ui:VisualElement>
+    </ui:VisualElement>
+</ui:UXML>

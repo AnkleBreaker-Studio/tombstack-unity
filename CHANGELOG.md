@@ -1,6 +1,6 @@
 # Changelog
 
-All notable changes to `com.anklebreaker.tombstone`.
+All notable changes to `com.anklebreaker.tombstack`.
 
 ## [0.9.0] - 2026-06-11
 ### Added — fulfilment nonce (log-pull authenticity)
@@ -12,18 +12,18 @@ All notable changes to `com.anklebreaker.tombstone`.
   `PullFulfillPayload` updated (additive — older servers leave the nonce fields empty/`0`).
 ### Added — request signing (HMAC, §S3)
 - Every **ingest** POST (crashes, bug-reports, events, heartbeats, events:batch, metrics:batch — NOT
-  the editor/pull endpoints) now carries an `X-Tombstone-Signature` header:
+  the editor/pull endpoints) now carries an `X-Tombstack-Signature` header:
   `t=<unixSec>,v1=<hex HMAC_SHA256(ingestKey, t + "." + rawBody)>`, keyed with the SDK token already
   sent as the Bearer ingest key (`System.Security.Cryptography.HMACSHA256`). Computed at send time
   (off the main game-frame path); the HMAC primitive + hex buffer are reused across requests.
   **Fail-silent** — if signing throws, the request is sent unsigned (the server accepts unsigned
-  during rollout). New file `TombstoneSign.cs`.
+  during rollout). New file `TombstackSign.cs`.
 ### Added — auto network-RTT metric + per-name sampling (§K1)
 - After each successful **ingest** POST the SDK measures the round trip with `Stopwatch` and emits a
-  `tombstone.rtt_ms` metric (unit `ms`) via the normal `TrackMetric` batch path. Opt-in via the
+  `tombstack.rtt_ms` metric (unit `ms`) via the normal `TrackMetric` batch path. Opt-in via the
   config flag `_autoRttMetric` (default ON). Recursion-guarded — the metrics:batch send is never
   measured, so the RTT metric can't measure its own batch.
-- **`Tombstone.SetSampleRate(string name, float rate0to1)`** — per-name keep-probability [0,1]
+- **`Tombstack.SetSampleRate(string name, float rate0to1)`** — per-name keep-probability [0,1]
   (deterministic/random sampler) applied **before** an event/metric is buffered, so a high-frequency
   name can't saturate the batch. Bounded map (128 names); unset names always keep. Fail-silent.
 ### Added — auto scene breadcrumbs (§K2)
@@ -31,16 +31,16 @@ All notable changes to `com.anklebreaker.tombstone`.
   (`"scene loaded: {name}"` / `"active scene changed: {from} -> {to}"`, category `scene`). Config
   flag `_autoSceneBreadcrumbs` (default ON); unhooked on shutdown. Zero alloc beyond the breadcrumb string.
 ### Added — diagnostics API + editor live-tail (§K3)
-- **`Tombstone.GetDiagnostics()`** → `TombstoneDiagnostics` (readonly struct): `Initialized`,
+- **`Tombstack.GetDiagnostics()`** → `TombstackDiagnostics` (readonly struct): `Initialized`,
   `ConsentGranted`, `QueuedOutbound`, `PersistedSidecar`, `LastFlushAgeSeconds`, `Endpoint`,
   `MatchId`, `ServerId`. No steady-state allocation beyond the returned struct.
-- **Live Tail window** (`Window ▸ Tombstone ▸ Live Tail`, UI Toolkit, forge-dark USS, editor-only):
+- **Live Tail window** (`Window ▸ Tombstack ▸ Live Tail`, UI Toolkit, forge-dark USS, editor-only):
   in Play mode it subscribes to a new lightweight `internal static event Action<string>
-  Tombstone.OnTelemetry` (raised fail-silently on each captured crumb/event/metric/crash) and shows
+  Tombstack.OnTelemetry` (raised fail-silently on each captured crumb/event/metric/crash) and shows
   a bounded scrolling list. The event is null (no subscriber) in shipped builds, so the hot path
   stays allocation-free.
 ### Changed
-- `TombstoneConfigSO` gains `_autoRttMetric` and `_autoSceneBreadcrumbs` (both default ON). Wire
+- `TombstackConfigSO` gains `_autoRttMetric` and `_autoSceneBreadcrumbs` (both default ON). Wire
   shapes are additive — `tests/unity-contract.test.ts` stays authoritative for the ingest contract.
 
 ## [0.8.1] - 2026-06-11
@@ -49,26 +49,26 @@ All notable changes to `com.anklebreaker.tombstone`.
   `OnApplicationPause`/`OnApplicationQuit` flush handlers in try/catch, matching `TrackEvent`/
   `TrackMetric`. An exception escaping `Update` was previously logged per-frame by Unity and
   re-captured by the log hook, risking a breadcrumb feedback loop and breaching the fail-silent
-  contract. Failures now funnel through the `[Tombstone]`-prefixed internal logger (filtered from
+  contract. Failures now funnel through the `[Tombstack]`-prefixed internal logger (filtered from
   breadcrumbs); behaviour is otherwise unchanged.
 ### Changed
-- **G17 numeric round-trip** — `TombstoneJson.AppendNumberField` now formats doubles with `"G17"`
+- **G17 numeric round-trip** — `TombstackJson.AppendNumberField` now formats doubles with `"G17"`
   (Microsoft's recommended round-trip specifier) instead of `"R"`, keeping `CultureInfo.InvariantCulture`.
   Still emits a valid finite JSON number; the wire shape and contract test are unchanged.
 
 ## [0.8.0] - 2026-06-11
 ### Added — log-pull control plane (server-triggered session-log retrieval)
-- **`Tombstone.RequestPlayerLogs(PullTarget target, string targetValue, string reason)`** — server-side
+- **`Tombstack.RequestPlayerLogs(PullTarget target, string targetValue, string reason)`** — server-side
   call (dedicated game server) to queue a pull of a player's / session's / match's / whole-server's
   session log. Requires a **WRITE-scoped** server token; an ingest-only client token is rejected
-  server-side (403) and surfaced via `[Tombstone]` log, never thrown. Fail-silent; gated on `Init`
+  server-side (403) and surfaced via `[Tombstack]` log, never thrown. Fail-silent; gated on `Init`
   only (NOT consent — consent is enforced on the client honouring side). Wire body:
   `{ "targetType", "targetValue", "reason" }` (`targetType` ∈ `userId|sessionId|matchId|server`;
   `targetValue` clamped to 128, `reason` clamped to 280 to match the server contract).
-- **`Tombstone.RequestPlayerLogs(string target, string reason)`** — convenience overload: `target` is a
-  player userId, or the sentinel `Tombstone.TARGET_ALL_ON_THIS_SERVER` ("all-on-this-server") to pull
+- **`Tombstack.RequestPlayerLogs(string target, string reason)`** — convenience overload: `target` is a
+  player userId, or the sentinel `Tombstack.TARGET_ALL_ON_THIS_SERVER` ("all-on-this-server") to pull
   every player on this dedicated server (resolved to the current serverId).
-- **`Tombstone.OnAnomalousDisconnect(string userId, string reason)`** — convenience auto-pull after a
+- **`Tombstack.OnAnomalousDisconnect(string userId, string reason)`** — convenience auto-pull after a
   weird disconnect (defaults `reason` to "anomalous disconnect"). Targets the player's userId.
 - **Automatic, transparent client honouring** — the heartbeat 202 ack now carries
   `data.pendingRequests`. The heartbeat loop parses the ack and, for each request that targets THIS
@@ -89,15 +89,15 @@ All notable changes to `com.anklebreaker.tombstone`.
 
 ## [0.7.0] - 2026-06-11
 ### Added — numeric metrics + client-side event/metric batching
-- **`Tombstone.TrackMetric(name, value, unit = null)`** — record a numeric sample (tickrate, RTT,
+- **`Tombstack.TrackMetric(name, value, unit = null)`** — record a numeric sample (tickrate, RTT,
   CCU, …). Fail-silent; non-finite values (NaN/Infinity) are dropped, never shipped. Each metric is
   stamped with the cached correlation spine (`role`/`serverId`/`matchId`/`userId`/`sessionId`) plus
-  `buildVersion`/`os`/`arch` and its own `occurredAtIso`. Hand-built JSON (`TombstoneJson`,
+  `buildVersion`/`os`/`arch` and its own `occurredAtIso`. Hand-built JSON (`TombstackJson`,
   AOT-safe): numbers are unquoted + invariant-culture round-trip ("R") formatted; empty ids are
   omitted. Wire item: `{ name, value, unit?, occurredAtIso, buildVersion, os, arch, role,
   serverId?, matchId?, userId?, sessionId? }`.
 - **Event + metric batching (§16)** — `TrackEvent` and `TrackMetric` no longer POST once per call.
-  Items accumulate into a **bounded, preallocated, drop-oldest** ring (`TombstoneBatch`, cap 256)
+  Items accumulate into a **bounded, preallocated, drop-oldest** ring (`TombstackBatch`, cap 256)
   and flush as a batch envelope `{ "sentAtIso", "items": [...] }` to
   `POST /api/v1/ingest/events:batch` / `…/metrics:batch`. Each item keeps its OWN `occurredAtIso`
   (when it happened); `sentAtIso` is added only at flush time. Flush triggers: **count ≥ 50**,
@@ -112,7 +112,7 @@ All notable changes to `com.anklebreaker.tombstone`.
 ### Changed
 - `TrackEvent` now stamps correlation via the shared `appendCorrelation` helper (same keys/omit-empty
   rules as before) and routes through the event batch buffer instead of a per-event POST.
-- New runtime file `TombstoneBatch.cs` (bounded batch buffer); `TombstoneJson` gains `AppendNumberField`
+- New runtime file `TombstackBatch.cs` (bounded batch buffer); `TombstackJson` gains `AppendNumberField`
   (unquoted, invariant-culture numbers). Wire shapes are additive — `tests/unity-contract.test.ts`
   pins the batch envelope + metric item; crashes/bug-reports/heartbeats remain **un-batched**
   (forensic/time-sensitive, sent individually).
@@ -120,11 +120,11 @@ All notable changes to `com.anklebreaker.tombstone`.
 ## [0.6.0] - 2026-06-11
 ### Added — multiplayer correlation: server ↔ session ↔ match ↔ player linking
 - **Match-context API**: three new fail-silent static calls —
-  - `Tombstone.SetMatchContext(serverId, matchId)` tags subsequent telemetry with a dedicated
+  - `Tombstack.SetMatchContext(serverId, matchId)` tags subsequent telemetry with a dedicated
     server + match (both clamped to 128 chars; null/"" clears).
-  - `Tombstone.StartMatch()` flips the emitter role to `"server"`, mints + returns a fresh match
+  - `Tombstack.StartMatch()` flips the emitter role to `"server"`, mints + returns a fresh match
     id (GUID "N") to broadcast to clients.
-  - `Tombstone.EndMatch()` clears the match id (role + server id are kept between matches).
+  - `Tombstack.EndMatch()` clears the match id (role + server id are kept between matches).
 - **Correlation stamping on every payload**: crashes, bug reports, analytics events, and session
   heartbeats now carry `role` (`"client"` default / `"server"`), `serverId`, `matchId`, and
   `sessionId`. Crash/bug/heartbeat stamp via `JsonUtility` (empty ids serialize as `""`, cleaned
@@ -137,7 +137,7 @@ All notable changes to `com.anklebreaker.tombstone`.
 ## [0.5.1] - 2026-06-10
 ### Fixed — SDK hardening (audit)
 - **Empty bundleVersion no longer drops all telemetry**: `buildVersion` is now guarded
-  (`TombstonePlatform.BuildVersion()` returns `"0.0.0"` when `Application.version` is empty)
+  (`TombstackPlatform.BuildVersion()` returns `"0.0.0"` when `Application.version` is empty)
   at every capture/cache site (Init and the heartbeat builder). Previously an empty
   bundleVersion serialized `buildVersion:""`, failing the server's `min(1)` schema and silently
   400ing every crash, event, and heartbeat.
@@ -160,21 +160,21 @@ All notable changes to `com.anklebreaker.tombstone`.
 - **Wider auto-capture**: in addition to `Application.logMessageReceivedThreaded` (main +
   background threads), the SDK now hooks `TaskScheduler.UnobservedTaskException` (observed +
   reported, never escalated) and `AppDomain.CurrentDomain.UnhandledException`. All auto-on at
-  Init; toggle via `TombstoneConfigSO._autoCaptureExceptions` (manual `ReportException` stays
+  Init; toggle via `TombstackConfigSO._autoCaptureExceptions` (manual `ReportException` stays
   available regardless).
 - **Crash dedupe**: identical signatures report at most once per 60s window; repeats become an
   Error breadcrumb counter (`crash suppressed (duplicate ×N …)`) instead of duplicate rows.
   Bounded 64-signature map. (Doubles between the Unity log path and the AppDomain hook also
   collapse server-side via the canonical stack signature.)
 - **Rolling session log + crash-time upload**: every log line mirrors into a ~512 KB
-  truncate-from-front file at `persistentDataPath/Tombstone/session.log` (buffered in memory,
+  truncate-from-front file at `persistentDataPath/Tombstack/session.log` (buffered in memory,
   flushed off the main thread at most once per 5s, plus a synchronous flush on the crash path
   and on clean quit). Crash and bug-report payloads now send `"log": true`; after the 2xx the
   SDK PUTs the log (text/plain, no auth header) to the response's presigned `data.logUpload.url`
   through the existing queue + backoff. Log PUTs retry with backoff but are never persisted
   (presigns expire); a 4xx (incl. expired presign) drops fail-soft. Toggle: `_uploadLogs`.
 - **Dirty-session detection ("crashed last run")**: Init writes
-  `persistentDataPath/Tombstone/session.lock` (sessionId, ISO start, buildVersion/os/arch);
+  `persistentDataPath/Tombstack/session.lock` (sessionId, ISO start, buildVersion/os/arch);
   `Application.quitting` deletes it. A marker found on the next Init ⇒ the previous session
   died hard (native crash, OOM kill, force quit). `session.log` rotates to
   `previous-session.log` at Init, BEFORE the new session starts writing. Design rule — no
@@ -186,11 +186,11 @@ All notable changes to `com.anklebreaker.tombstone`.
   Toggle: `_detectUncleanShutdown`.
 - **Bug reports attach the session log** (`ReportBug` sends `"log": true`) — a player filing a
   report is exactly when you want their log.
-- `TombstoneConfigSO`: `_autoCaptureExceptions` / `_uploadLogs` / `_detectUncleanShutdown`
+- `TombstackConfigSO`: `_autoCaptureExceptions` / `_uploadLogs` / `_detectUncleanShutdown`
   (all default ON, consent-gated like everything else: with `RequireConsent`, nothing is
   captured, mirrored, marked, or reported until `SetConsent(true)` — which also starts the
   deferred session tracking).
-- New runtime files: `TombstoneSessionLog.cs` (rolling log) and `TombstoneSessionMarker.cs`
+- New runtime files: `TombstackSessionLog.cs` (rolling log) and `TombstackSessionMarker.cs`
   (session.lock), both fail-silent with every file op wrapped.
 ### Changed
 - `CrashPayload`/`BugPayload` gained a `bool log` field (JsonUtility serializes `false` when
@@ -208,44 +208,44 @@ All notable changes to `com.anklebreaker.tombstone`.
 
 ## [0.4.0] - 2026-06-10
 ### Added
-- **Editor plugin** (`AnkleBreaker.Tombstone.Editor`, editor-only asmdef, full UI Toolkit):
-  - **Mandatory account sign-in**: the plugin is inert until you connect your Tombstone
-    account (`Window ▸ Tombstone ▸ Sign In`). The editor token is stored per-user in
+- **Editor plugin** (`AnkleBreaker.Tombstack.Editor`, editor-only asmdef, full UI Toolkit):
+  - **Mandatory account sign-in**: the plugin is inert until you connect your Tombstack
+    account (`Window ▸ Tombstack ▸ Sign In`). The editor token is stored per-user in
     EditorPrefs only — it never lands in the project folder or version control.
-  - **Hub** (`Window ▸ Tombstone ▸ Hub`): studio/game picker from `/api/editor/me`,
+  - **Hub** (`Window ▸ Tombstack ▸ Hub`): studio/game picker from `/api/editor/me`,
     one-click **Link this project** (mints a `tmb_` SDK token and writes endpoint + token
-    into the `TombstoneConfig` asset, creating it at `Assets/Tombstone/Resources/` if
+    into the `TombstackConfig` asset, creating it at `Assets/Tombstack/Resources/` if
     missing), connection status card, and a **live dashboard** tab — crash-free %, 24h/7d
     counts, spike banner, top-10 status-colored signatures (click-through to the web
     dashboard), 30-day trend bars, manual refresh + 60s auto-refresh.
-  - **Project Settings page** (`Edit ▸ Project Settings ▸ Tombstone`): endpoint override,
+  - **Project Settings page** (`Edit ▸ Project Settings ▸ Tombstack`): endpoint override,
     heartbeat interval + consent defaults (written into the config asset), unlink, sign out.
   - **First-run prompt**: a gentle, dismissible once-per-session window pointing to the Hub
     while the plugin is unconfigured.
-  - Forge-dark USS theme (`TombstoneTheme.uss`) matching the web dashboard's design tokens.
-  - Typed async editor API client (`TombstoneEditorApi`, `ApiResult<T>`) over UnityWebRequest;
+  - Forge-dark USS theme (`TombstackTheme.uss`) matching the web dashboard's design tokens.
+  - Typed async editor API client (`TombstackEditorApi`, `ApiResult<T>`) over UnityWebRequest;
     fail-soft everywhere — errors surface in the UI, never as editor-loop exceptions.
-  - Per-project binding persisted to `ProjectSettings/TombstoneSettings.asset`
+  - Per-project binding persisted to `ProjectSettings/TombstackSettings.asset`
     (ScriptableSingleton); `Documentation~/index.md` for offline docs.
 ### Changed
 - Package now targets **Unity 6** (`"unity": "6000.0"`); declared the Quick Start sample in
   `package.json`.
 - Runtime: added `Runtime/AssemblyInfo.cs` (`InternalsVisibleTo` for the editor assembly so
-  it reuses the AOT-safe `TombstoneJson` writer). **No wire shapes changed** —
+  it reuses the AOT-safe `TombstackJson` writer). **No wire shapes changed** —
   `tests/unity-contract.test.ts` still pins the ingest contract.
 
 ## [0.3.0] - 2026-06-10
 ### Added
-- `Tombstone.TrackEvent(name, Dictionary<string,string> props)` → `POST /api/v1/ingest/events`
-  (analytics events & funnels). Hand-built JSON (`TombstoneJson`) — JsonUtility can't serialize
+- `Tombstack.TrackEvent(name, Dictionary<string,string> props)` → `POST /api/v1/ingest/events`
+  (analytics events & funnels). Hand-built JSON (`TombstackJson`) — JsonUtility can't serialize
   dictionaries and absent optionals must be omitted, not sent as `""`.
-- `Tombstone.AddBreadcrumb(message, BreadcrumbLevel, category)` — manual breadcrumbs with
+- `Tombstack.AddBreadcrumb(message, BreadcrumbLevel, category)` — manual breadcrumbs with
   Info/Warning/Error levels; category folds into the message as a `[category] ` prefix.
 - **In-session retry with exponential backoff** (2s→32s, 5 attempts, max 4 concurrent uploads)
   + **write-ahead persistence** for crashes/bugs (persisted *before* the first attempt, so a
   quit can no longer lose them) + poison-payload drop on HTTP 4xx + a 64-file queue cap.
 - Heartbeats now carry `userId` (Sessions/Fleet attribution) and respect consent.
-- XML doc comments on every public member; internal `TombstoneLog` single logger.
+- XML doc comments on every public member; internal `TombstackLog` single logger.
 ### Changed
 - All public entry points are now fail-silent (any internal exception is caught + logged,
   never propagated to game code); `handleLog` is re-entrancy-safe (own warnings filtered
@@ -255,17 +255,17 @@ All notable changes to `com.anklebreaker.tombstone`.
 - `SetUser` clamps to the server contract (userId ≤128, steamId ≤32); `ReportBug` clamps
   `category` to 32 chars (previously an over-long category 400'd the whole report).
 - Heartbeat interval clamped to 15–600s; build/os/arch cached at Init (thread-safe capture).
-- Wire DTOs extracted to `TombstonePayloads.cs` (shapes unchanged — pinned by
+- Wire DTOs extracted to `TombstackPayloads.cs` (shapes unchanged — pinned by
   `tests/unity-contract.test.ts`).
 
 ## [0.2.0] - 2026-06-07
 ### Added
-- `TombstoneConfigSO` ScriptableObject (`Create ▸ Tombstone ▸ Config`) + zero-code
-  auto-init from a `Resources/TombstoneConfig` asset (`[RuntimeInitializeOnLoadMethod]`).
+- `TombstackConfigSO` ScriptableObject (`Create ▸ Tombstack ▸ Config`) + zero-code
+  auto-init from a `Resources/TombstackConfig` asset (`[RuntimeInitializeOnLoadMethod]`).
 - **Offline-first durable queue**: failed crash/bug uploads persist to
-  `Application.persistentDataPath/Tombstone` and retry on the next launch.
-- `Tombstone.ReportBug(message, category)` for in-game feedback.
-- `Tombstone.Init` now accepts a `heartbeatIntervalSeconds` argument.
+  `Application.persistentDataPath/Tombstack` and retry on the next launch.
+- `Tombstack.ReportBug(message, category)` for in-game feedback.
+- `Tombstack.Init` now accepts a `heartbeatIntervalSeconds` argument.
 ### Changed
 - Aligned all C# to the AnkleBreaker naming standard (private methods `camelCase`,
   constants `UPPER_SNAKE_CASE`, endpoints as named constants).
@@ -275,8 +275,8 @@ All notable changes to `com.anklebreaker.tombstone`.
 - Managed C# exception capture via `Application.logMessageReceivedThreaded` → uploaded
   to `POST /api/v1/ingest/crashes` with a stable SHA-256 signature (top frames normalized).
 - Session heartbeats (`POST /api/v1/ingest/heartbeats`) every 60s for CCU.
-- `Tombstone.Init(gameToken, endpoint)`, `Tombstone.SetUser(userId, steamId?)`,
-  `Tombstone.ReportException(ex)`, `Tombstone.SetConsent(bool)`.
+- `Tombstack.Init(gameToken, endpoint)`, `Tombstack.SetUser(userId, steamId?)`,
+  `Tombstack.ReportException(ex)`, `Tombstack.SetConsent(bool)`.
 - Platform mapping (os/arch) to the ingestion contract whitelist.
 
 ### Not yet

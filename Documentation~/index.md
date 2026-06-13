@@ -1,9 +1,9 @@
-# Tombstone for Unity — Documentation
+# Tombstack for Unity — Documentation
 
 Crash, exception, and session telemetry for Unity games, with an in-editor hub connected to
-your Tombstone account. Requires **Unity 6 (6000.0)** or newer.
+your Tombstack account. Requires **Unity 6 (6000.0)** or newer.
 
-> Tombstone is a hosted service. The plugin is free; a Tombstone account is required
+> Tombstack is a hosted service. The plugin is free; a Tombstack account is required
 > (free tier under 10 CCU). Create one at the signup link inside the sign-in window.
 
 ## Quickstart
@@ -11,14 +11,14 @@ your Tombstone account. Requires **Unity 6 (6000.0)** or newer.
 ### 1. Install
 
 - Package Manager ▸ `+` ▸ *Add package from git URL…* →
-  `https://github.com/AnkleBreaker-Studio/tombstone.git?path=unity`
+  `https://github.com/AnkleBreaker-Studio/tombstack.git?path=unity`
 - Or import from the Unity Asset Store / copy the folder into `Packages/`.
 
 ### 2. Sign in (mandatory)
 
-The plugin is inactive until you connect your Tombstone account.
+The plugin is inactive until you connect your Tombstack account.
 
-1. Open **Window ▸ Tombstone ▸ Sign In** (a one-time prompt also appears on first load).
+1. Open **Window ▸ Tombstack ▸ Sign In** (a one-time prompt also appears on first load).
 2. Enter your account email + password. The editor token is stored per-user in
    EditorPrefs — it is never written into your project or version control.
 
@@ -26,10 +26,10 @@ The plugin is inactive until you connect your Tombstone account.
 
 ### 3. Link this project
 
-1. Open **Window ▸ Tombstone ▸ Hub**.
+1. Open **Window ▸ Tombstack ▸ Hub**.
 2. On the **Connection** tab, pick your studio and game, then click **LINK THIS PROJECT**.
 3. The plugin mints a per-game SDK token (`tmb_…`) and writes it — together with the
-   endpoint — into `Assets/Tombstone/Resources/TombstoneConfig.asset` (created if missing).
+   endpoint — into `Assets/Tombstack/Resources/TombstackConfig.asset` (created if missing).
    This is the asset the runtime SDK auto-initializes from; the token is game-facing and is
    supposed to ship with your build.
 
@@ -53,7 +53,7 @@ Switch to the Hub's **Dashboard** tab:
 Enter Play Mode and throw a test exception — it appears on the dashboard within seconds:
 
 ```csharp
-throw new System.Exception("Tombstone smoke test");
+throw new System.Exception("Tombstack smoke test");
 ```
 
 ## What's automatic (v0.5.0)
@@ -64,7 +64,7 @@ Once initialized, the SDK needs no further integration for the common cases:
   AppDomain unhandled exceptions are captured automatically and deduped (≤1 report per
   signature per minute; repeats become a counter breadcrumb).
 - **Player log** — every log line mirrors into a rolling ~512 KB
-  `persistentDataPath/Tombstone/session.log`; when a crash or bug report is accepted, the log
+  `persistentDataPath/Tombstack/session.log`; when a crash or bug report is accepted, the log
   uploads automatically to a presigned URL returned by the server.
 - **Unclean shutdowns** — if the app dies without a clean quit (hard crash, OOM kill, force
   quit), the next launch detects it via the `session.lock` marker, reports a synthetic crash
@@ -74,12 +74,12 @@ Once initialized, the SDK needs no further integration for the common cases:
 Manual one-liners: `SetUser`, `TrackEvent`, `ReportBug` (now attaches the session log),
 `AddBreadcrumb`, `ReportException`.
 
-Three toggles on the `TombstoneConfig` asset control the autonomy systems (all default ON):
+Three toggles on the `TombstackConfig` asset control the autonomy systems (all default ON):
 *Auto Capture Exceptions*, *Upload Logs*, *Detect Unclean Shutdown*. All are consent-gated —
 with *Require consent* enabled, nothing is captured, mirrored, or reported until your game
-calls `Tombstone.SetConsent(true)`.
+calls `Tombstack.SetConsent(true)`.
 
-### Files the SDK keeps under `persistentDataPath/Tombstone/`
+### Files the SDK keeps under `persistentDataPath/Tombstack/`
 
 | File | Purpose |
 |---|---|
@@ -90,26 +90,26 @@ calls `Tombstone.SetConsent(true)`.
 
 ## Project Settings
 
-**Edit ▸ Project Settings ▸ Tombstone**
+**Edit ▸ Project Settings ▸ Tombstack**
 
 | Setting | Effect |
 |---|---|
-| Base URL override | Point the plugin + SDK at a self-hosted/staging Tombstone tenant. Re-link after changing it. |
+| Base URL override | Point the plugin + SDK at a self-hosted/staging Tombstack tenant. Re-link after changing it. |
 | Heartbeat (s) | Seconds between session heartbeats (written into the config asset; runtime clamps 15–600). |
-| Require consent | When on, the SDK captures nothing until your game calls `Tombstone.SetConsent(true)`. |
+| Require consent | When on, the SDK captures nothing until your game calls `Tombstack.SetConsent(true)`. |
 | Unlink project | Clears the game binding and blanks the SDK token in the config asset. |
 | Sign out | Invalidates and deletes the editor token. |
 
 ## Runtime API (summary)
 
 ```csharp
-Tombstone.Init(gameToken, endpoint, heartbeatIntervalSeconds = 60f); // auto-called via TombstoneConfig
-Tombstone.SetConsent(bool granted);
-Tombstone.SetUser(userId, steamId = null);
-Tombstone.TrackEvent(name, Dictionary<string,string> props = null);
-Tombstone.AddBreadcrumb(message, BreadcrumbLevel level = Info, category = null);
-Tombstone.ReportException(exception);
-Tombstone.ReportBug(message, category = null);
+Tombstack.Init(gameToken, endpoint, heartbeatIntervalSeconds = 60f); // auto-called via TombstackConfig
+Tombstack.SetConsent(bool granted);
+Tombstack.SetUser(userId, steamId = null);
+Tombstack.TrackEvent(name, Dictionary<string,string> props = null);
+Tombstack.AddBreadcrumb(message, BreadcrumbLevel level = Info, category = null);
+Tombstack.ReportException(exception);
+Tombstack.ReportBug(message, category = null);
 ```
 
 See the package `README.md` for full runtime behavior (offline-first durable queue,
@@ -120,16 +120,16 @@ breadcrumbs, consent gating, fail-silent guarantees).
 | Credential | Location | In version control? |
 |---|---|---|
 | Editor token (your account) | EditorPrefs (per user, per machine) | Never |
-| SDK ingest token (`tmb_…`, per game) | `Assets/Tombstone/Resources/TombstoneConfig.asset` | Yes — it is game-facing by design |
-| Project ↔ game binding (ids only) | `ProjectSettings/TombstoneSettings.asset` | Yes (no secrets) |
+| SDK ingest token (`tmb_…`, per game) | `Assets/Tombstack/Resources/TombstackConfig.asset` | Yes — it is game-facing by design |
+| Project ↔ game binding (ids only) | `ProjectSettings/TombstackSettings.asset` | Yes (no secrets) |
 
 ## Troubleshooting
 
 - **"Wrong email or password"** — credentials rejected (HTTP 401). Reset your password on
   the web dashboard if needed.
 - **"Too many attempts"** — sign-in rate limit (HTTP 429). Wait a minute.
-- **"Could not reach Tombstone"** — offline or the endpoint override is wrong. Check
-  *Project Settings ▸ Tombstone ▸ Base URL*.
+- **"Could not reach Tombstack"** — offline or the endpoint override is wrong. Check
+  *Project Settings ▸ Tombstack ▸ Base URL*.
 - **"Session expired — sign in again"** — the editor token expired; sign in again. Your
   project link and SDK token are unaffected.
 - **Dashboard empty** — make sure the project is linked and the game has reported at least
@@ -137,4 +137,4 @@ breadcrumbs, consent gating, fail-silent guarantees).
 
 ## Support
 
-- Issues: https://github.com/AnkleBreaker-Studio/tombstone/issues
+- Issues: https://github.com/AnkleBreaker-Studio/tombstack/issues
