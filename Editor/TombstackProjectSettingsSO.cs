@@ -13,8 +13,10 @@ namespace AnkleBreaker.Tombstack.Editor
     [FilePath("ProjectSettings/TombstackSettings.asset", FilePathAttribute.Location.ProjectFolder)]
     public sealed class TombstackProjectSettingsSO : ScriptableSingleton<TombstackProjectSettingsSO>
     {
-        /// <summary>Default Tombstack base URL (dashboard + editor API + ingestion).</summary>
-        public const string DEFAULT_ENDPOINT = "https://d37yvxlv29ed7d.cloudfront.net";
+        /// <summary>Default Tombstack base URL (dashboard + editor API + ingestion). The canonical
+        /// custom domain — the raw <c>*.cloudfront.net</c> origin is not directly reachable
+        /// (Host-based routing returns 403), so the SDK must target this host.</summary>
+        public const string DEFAULT_ENDPOINT = "https://tombstack.com";
 
         [SerializeField] private string _studioId = "";
         [SerializeField] private string _studioName = "";

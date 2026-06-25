@@ -2,6 +2,18 @@
 
 All notable changes to `com.anklebreaker.tombstack`.
 
+## [0.9.1] - 2026-06-25
+### Fixed — package now imports correctly via the UPM git URL
+- The published package now includes Unity `.meta` files. Without them, a git-URL / tarball install
+  had no asset GUIDs, so Unity silently ignored every script and asmdef in the package. Re-published
+  with the full `.meta` set so the package imports and compiles on install.
+- `Tombstack.cs`: qualified `Random` as `System.Random` (was an ambiguous reference between
+  `UnityEngine.Random` and `System.Random` — compile error CS0104).
+- `TombstackBehaviour.cs`: corrected a `PendingUpload.Post` call to the real parameter name
+  `fromPreviousSession` (was `logFromPreviousSession` — compile error CS1739).
+- Default endpoint is now `https://tombstack.com` (the canonical custom domain; the raw
+  `*.cloudfront.net` origin is not directly reachable and returns 403 via host-based routing).
+
 ## [0.9.0] - 2026-06-11
 ### Added — fulfilment nonce (log-pull authenticity)
 - The heartbeat ack now carries, per pending request, a `fulfillNonce` (string) and `nonceExpiry`

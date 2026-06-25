@@ -122,6 +122,12 @@ namespace AnkleBreaker.Tombstack
         private static bool _autoCaptureExceptions = true;
         private static bool _uploadLogs = true;
         private static bool _detectUncleanShutdown = true;
+        // Screenshot auto-capture (see TombstackScreenshot). Bug capture defaults ON; exception
+        // capture is opt-in. Overridden from TombstackConfigSO at auto-init.
+        private static bool _captureScreenshotOnBugReport = true;
+        private static bool _captureScreenshotOnException = false;
+        private static int _screenshotMaxDimension = 1280;
+        private static float _exceptionScreenshotThrottleSeconds = 10f;
         // v0.9 autonomy toggles — default ON; overridden from TombstackConfigSO at auto-init.
         private static bool _autoRttMetric = true;        // §K1: auto tombstack.rtt_ms after each ingest POST
         private static bool _autoSceneBreadcrumbs = true; // §K2: auto breadcrumb on scene load / active change
@@ -175,7 +181,7 @@ namespace AnkleBreaker.Tombstack
         private static readonly Dictionary<string, float> _sampleRates =
             new Dictionary<string, float>(StringComparer.Ordinal);
         private static readonly object _sampleLock = new object();
-        [ThreadStatic] private static Random _sampleRng;
+        [ThreadStatic] private static System.Random _sampleRng;
 
         // §K3 editor live-tail: raised fail-silently on each captured crumb/event/metric/crash so the
         // editor-only Live Tail window can subscribe. Null (no subscriber) in shipped builds → the
@@ -213,6 +219,10 @@ namespace AnkleBreaker.Tombstack
                 _autoCaptureExceptions = config.AutoCaptureExceptions;
                 _uploadLogs = config.UploadLogs;
                 _detectUncleanShutdown = config.DetectUncleanShutdown;
+                _captureScreenshotOnBugReport = config.CaptureScreenshotOnBugReport;
+                _captureScreenshotOnException = config.CaptureScreenshotOnException;
+                _screenshotMaxDimension = config.ScreenshotMaxDimension;
+                _exceptionScreenshotThrottleSeconds = config.ExceptionScreenshotThrottleSeconds;
                 _autoRttMetric = config.AutoRttMetric;
                 _autoSceneBreadcrumbs = config.AutoSceneBreadcrumbs;
                 Init(config.GameToken, config.Endpoint, config.HeartbeatIntervalSeconds);
@@ -506,8 +516,33 @@ namespace AnkleBreaker.Tombstack
                     matchId = _matchId,
                     sessionId = _sessionId,
                 };
-                TombstackBehaviour.Enqueue(
-                    BUG_REPORTS_PATH, JsonUtility.ToJson(payload), UploadDurability.WriteAhead, payload.log);
+                if (_captureScreenshotOnBugReport && TombstackBehaviour.HasInstance)
+                {
+                    // Capture at end-of-frame on the host, then attach + enqueue + PUT the bytes.
+                    // The report is never blocked or lost — capture failure just ships no screenshot.
+                    TombstackBehaviour.CaptureScreenshot(_screenshotMaxDimension, shot =>
+                    {
+                        if (shot.HasValue)
+                        {
+                            payload.screenshot = new ScreenshotMeta { size = shot.Value.Size, sha256 = shot.Value.Sha256 };
+                            TombstackBehaviour.EnqueueWithScreenshot(
+                                BUG_REPORTS_PATH, JsonUtility.ToJson(payload), UploadDurability.WriteAhead,
+                                payload.log, shot.Value.Bytes);
+                        }
+                        else
+                        {
+                            payload.screenshot = new ScreenshotMeta();
+                            TombstackBehaviour.Enqueue(
+                                BUG_REPORTS_PATH, JsonUtility.ToJson(payload), UploadDurability.WriteAhead, payload.log);
+                        }
+                    });
+                }
+                else
+                {
+                    payload.screenshot = new ScreenshotMeta();
+                    TombstackBehaviour.Enqueue(
+                        BUG_REPORTS_PATH, JsonUtility.ToJson(payload), UploadDurability.WriteAhead, payload.log);
+                }
             }
             catch (Exception e)
             {
@@ -672,7 +707,7 @@ namespace AnkleBreaker.Tombstack
             }
             if (rate >= 1f) return true;
             if (rate <= 0f) return false;
-            var rng = _sampleRng ?? (_sampleRng = new Random());
+            var rng = _sampleRng ?? (_sampleRng = new System.Random());
             return rng.NextDouble() < rate;
         }
 
@@ -812,11 +847,30 @@ namespace AnkleBreaker.Tombstack
                 matchId = _matchId,
                 sessionId = _sessionId,
             };
+            // Opt-in exception screenshot: synchronous best-effort grab (main-thread only, throttled).
+            // Never delays or drops the durable crash — on any miss the crash ships with no screenshot
+            // (payload.screenshot stays null → JsonUtility emits {size:0} → server presigns nothing).
+            byte[] shotBytes = null;
+            if (_captureScreenshotOnException && TombstackScreenshot.OnMainThread
+                && TombstackScreenshot.ThrottleAllows(_exceptionScreenshotThrottleSeconds))
+            {
+                var shot = TombstackScreenshot.CaptureSync(_screenshotMaxDimension);
+                if (shot.HasValue)
+                {
+                    payload.screenshot = new ScreenshotMeta { size = shot.Value.Size, sha256 = shot.Value.Sha256 };
+                    shotBytes = shot.Value.Bytes;
+                }
+            }
+
             // Pre-crash flush: deliver buffered events/metrics before the (possibly fatal) crash
             // path may end the process, so a final batch isn't lost when the app dies here.
             TombstackBehaviour.FlushBatches();
-            TombstackBehaviour.Enqueue(
-                CRASHES_PATH, JsonUtility.ToJson(payload), UploadDurability.WriteAhead, payload.log);
+            if (shotBytes != null)
+                TombstackBehaviour.EnqueueWithScreenshot(
+                    CRASHES_PATH, JsonUtility.ToJson(payload), UploadDurability.WriteAhead, payload.log, shotBytes);
+            else
+                TombstackBehaviour.Enqueue(
+                    CRASHES_PATH, JsonUtility.ToJson(payload), UploadDurability.WriteAhead, payload.log);
             raiseTelemetry("crash", payload.stackHint);
             // Final flush in the crash path: the on-disk log must include this crash even if
             // the process dies before the upload (the write-ahead record retries next launch

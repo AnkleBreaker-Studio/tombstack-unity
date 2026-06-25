@@ -55,6 +55,7 @@ namespace AnkleBreaker.Tombstack
         private const float LOG_FLUSH_INTERVAL_SECONDS = 5f;
         private const int LOG_UPLOAD_TIMEOUT_SECONDS = 30;
         private const string CONTENT_TYPE_TEXT_PLAIN = "text/plain";
+        private const string CONTENT_TYPE_IMAGE_PNG = "image/png";
         // §K1: name of the auto round-trip metric emitted after each successful ingest POST.
         private const string RTT_METRIC_NAME = "tombstack.rtt_ms";
 
@@ -105,6 +106,9 @@ namespace AnkleBreaker.Tombstack
         internal static void Bootstrap(string endpoint, string gameToken, string sessionId, float heartbeatIntervalSeconds)
         {
             if (_instance != null) return;
+            // Stamp the main thread for the synchronous exception-screenshot guard (rendering APIs are
+            // main-thread-only). Bootstrap runs on the main thread during Init.
+            TombstackScreenshot.MainThreadId = System.Threading.Thread.CurrentThread.ManagedThreadId;
             var go = new GameObject("[Tombstack]");
             DontDestroyOnLoad(go);
             _instance = go.AddComponent<TombstackBehaviour>();
@@ -132,6 +136,33 @@ namespace AnkleBreaker.Tombstack
             bool requestLog = false, bool logFromPreviousSession = false)
         {
             var item = PendingUpload.Post(path, json, durability, null, requestLog, logFromPreviousSession);
+            if (durability == UploadDurability.WriteAhead) persist(item);
+            enqueueOutbound(item);
+        }
+
+        /// <summary>True once the upload host exists (after Init/Bootstrap).</summary>
+        internal static bool HasInstance => _instance != null;
+
+        /// <summary>Run an end-of-frame screenshot capture on the host and hand the result to
+        /// <paramref name="cb"/> (null when no host or on failure). Used by the bug-report path.</summary>
+        internal static void CaptureScreenshot(int maxDimension, System.Action<TombstackScreenshot.Shot?> cb)
+        {
+            if (_instance == null) { cb?.Invoke(null); return; }
+            _instance.StartCoroutine(TombstackScreenshot.Capture(maxDimension, cb));
+        }
+
+        /// <summary>Like <see cref="Enqueue"/> but carries captured screenshot bytes: on the 2xx the
+        /// response's screenshotUpload presign is chased and the PNG is PUT. Best-effort — the bytes
+        /// are NOT persisted with the write-ahead record (a screenshot lost to a restart is fine).</summary>
+        internal static void EnqueueWithScreenshot(
+            string path, string json, UploadDurability durability, bool requestLog, byte[] screenshotBytes)
+        {
+            var item = PendingUpload.Post(path, json, durability, null, requestLog, false);
+            if (screenshotBytes != null && screenshotBytes.Length > 0)
+            {
+                item.RequestedScreenshot = true;
+                item.ScreenshotBytes = screenshotBytes;
+            }
             if (durability == UploadDurability.WriteAhead) persist(item);
             enqueueOutbound(item);
         }
@@ -263,7 +294,7 @@ namespace AnkleBreaker.Tombstack
                         if (record.path == Tombstack.CRASHES_PATH) _hasRestoredCrash = true;
                         enqueueOutbound(PendingUpload.Post(
                             record.path, record.body, UploadDurability.WriteAhead, file,
-                            record.requestLog, logFromPreviousSession: true));
+                            record.requestLog, fromPreviousSession: true));
                     }
                 }
             }
@@ -379,7 +410,7 @@ namespace AnkleBreaker.Tombstack
                     var put = new UnityWebRequest(item.AbsoluteUrl, UnityWebRequest.kHttpVerbPUT);
                     put.uploadHandler = new UploadHandlerRaw(item.RawBody);
                     put.downloadHandler = new DownloadHandlerBuffer();
-                    put.SetRequestHeader("Content-Type", CONTENT_TYPE_TEXT_PLAIN);
+                    put.SetRequestHeader("Content-Type", item.PutContentType ?? CONTENT_TYPE_TEXT_PLAIN);
                     put.timeout = LOG_UPLOAD_TIMEOUT_SECONDS;
                     return put;
                 }
@@ -419,6 +450,8 @@ namespace AnkleBreaker.Tombstack
                     deletePersisted(item);
                     if (item.RequestedLog && !item.IsLogPut)
                         scheduleLogUpload(item, req.downloadHandler != null ? req.downloadHandler.text : null);
+                    if (item.RequestedScreenshot && !item.IsLogPut)
+                        scheduleScreenshotUpload(item, req.downloadHandler != null ? req.downloadHandler.text : null);
                     // Command channel: a heartbeat ack may carry pull requests targeting this client.
                     if (!item.IsLogPut && item.Path == HEARTBEATS_PATH)
                         handleHeartbeatAck(req.downloadHandler != null ? req.downloadHandler.text : null);
@@ -497,6 +530,29 @@ namespace AnkleBreaker.Tombstack
             catch (Exception e)
             {
                 TombstackLog.Warn($"log presign handling failed: {e.Message}");
+            }
+        }
+
+        /// <summary>
+        /// A crash/bug that carried a screenshot got its 2xx — parse data.screenshotUpload and queue
+        /// the PUT of the captured PNG (already in memory; no file read). Best-effort: any failure
+        /// drops the screenshot, never the already-delivered report.
+        /// </summary>
+        private void scheduleScreenshotUpload(PendingUpload item, string responseText)
+        {
+            try
+            {
+                if (item.ScreenshotBytes == null || item.ScreenshotBytes.Length == 0) return;
+                if (string.IsNullOrEmpty(responseText)) return;
+                var response = JsonUtility.FromJson<IngestResponse>(responseText);
+                var target = response != null && response.data != null ? response.data.screenshotUpload : null;
+                // JsonUtility default-constructs absent nested objects — the url is the only reliable signal.
+                if (target == null || string.IsNullOrEmpty(target.url)) return;
+                enqueueOutbound(PendingUpload.ScreenshotPut(target.url, item.ScreenshotBytes));
+            }
+            catch (Exception e)
+            {
+                TombstackLog.Warn($"screenshot presign handling failed: {e.Message}");
             }
         }
 
@@ -627,12 +683,18 @@ namespace AnkleBreaker.Tombstack
             public readonly bool IsLogPut;            // raw PUT to AbsoluteUrl instead of a JSON POST
             public readonly string AbsoluteUrl;
             public readonly byte[] RawBody;
+            public readonly string PutContentType;    // content-type for a raw PUT (null ⇒ text/plain)
+            // Screenshot carried with an ingest POST: chase data.screenshotUpload on 2xx and PUT these
+            // bytes. Mutable (set right after Post by the capture path); best-effort, never persisted.
+            public bool RequestedScreenshot;
+            public byte[] ScreenshotBytes;
             public string FilePath; // non-null when the item is backed by a persisted file
             public int Attempt;     // in-session retry counter
 
             private PendingUpload(
                 string path, string body, UploadDurability durability, string filePath,
-                bool requestedLog, bool fromPreviousSession, bool isLogPut, string absoluteUrl, byte[] rawBody)
+                bool requestedLog, bool fromPreviousSession, bool isLogPut, string absoluteUrl, byte[] rawBody,
+                string putContentType)
             {
                 Path = path;
                 Body = body;
@@ -643,6 +705,7 @@ namespace AnkleBreaker.Tombstack
                 IsLogPut = isLogPut;
                 AbsoluteUrl = absoluteUrl;
                 RawBody = rawBody;
+                PutContentType = putContentType;
             }
 
             /// <summary>A JSON ingest POST (crash, bug, event, heartbeat).</summary>
@@ -651,7 +714,7 @@ namespace AnkleBreaker.Tombstack
                 bool requestedLog, bool fromPreviousSession)
             {
                 return new PendingUpload(
-                    path, body, durability, filePath, requestedLog, fromPreviousSession, false, null, null);
+                    path, body, durability, filePath, requestedLog, fromPreviousSession, false, null, null, null);
             }
 
             /// <summary>A presigned session-log PUT. Retries with the shared backoff but is
@@ -659,7 +722,15 @@ namespace AnkleBreaker.Tombstack
             public static PendingUpload LogPut(string absoluteUrl, byte[] bytes)
             {
                 return new PendingUpload(
-                    null, null, UploadDurability.PersistOnFailure, null, false, false, true, absoluteUrl, bytes);
+                    null, null, UploadDurability.PersistOnFailure, null, false, false, true, absoluteUrl, bytes, null);
+            }
+
+            /// <summary>A presigned screenshot PUT (image/png). Best-effort like a log PUT.</summary>
+            public static PendingUpload ScreenshotPut(string absoluteUrl, byte[] bytes)
+            {
+                return new PendingUpload(
+                    null, null, UploadDurability.PersistOnFailure, null, false, false, true, absoluteUrl, bytes,
+                    CONTENT_TYPE_IMAGE_PNG);
             }
         }
 

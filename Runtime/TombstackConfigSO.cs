@@ -41,6 +41,18 @@ namespace AnkleBreaker.Tombstack
         [Tooltip("Automatically add a breadcrumb when a scene loads or the active scene changes.")]
         [SerializeField] private bool _autoSceneBreadcrumbs = true;
 
+        [Tooltip("Attach an automatic screenshot of the current frame to player bug reports (ON by default — players expect a report to capture what they see).")]
+        [SerializeField] private bool _captureScreenshotOnBugReport = true;
+
+        [Tooltip("Attach an automatic screenshot when an exception is captured, for visual context (OFF by default — opt-in; throttled and invisible to the player).")]
+        [SerializeField] private bool _captureScreenshotOnException = false;
+
+        [Tooltip("Longest-side pixel cap for captured screenshots (downscaled to keep uploads small). 0 = full resolution.")]
+        [SerializeField] private int _screenshotMaxDimension = 1280;
+
+        [Tooltip("Minimum seconds between exception screenshots, so an exception storm cannot spam GPU readbacks.")]
+        [SerializeField] private float _exceptionScreenshotThrottleSeconds = 10f;
+
         public string Endpoint => _endpoint;
         public string GameToken => _gameToken;
         public bool AutoInitOnLoad => _autoInitOnLoad;
@@ -51,5 +63,9 @@ namespace AnkleBreaker.Tombstack
         public bool DetectUncleanShutdown => _detectUncleanShutdown;
         public bool AutoRttMetric => _autoRttMetric;
         public bool AutoSceneBreadcrumbs => _autoSceneBreadcrumbs;
+        public bool CaptureScreenshotOnBugReport => _captureScreenshotOnBugReport;
+        public bool CaptureScreenshotOnException => _captureScreenshotOnException;
+        public int ScreenshotMaxDimension => _screenshotMaxDimension;
+        public float ExceptionScreenshotThrottleSeconds => _exceptionScreenshotThrottleSeconds;
     }
 }

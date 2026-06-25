@@ -36,6 +36,10 @@ namespace AnkleBreaker.Tombstack
         /// session log). JsonUtility serializes <c>false</c> when unset — the server treats
         /// <c>"log":false</c> as no-log, so the plain bool field is contract-safe.</summary>
         public bool log;
+        /// <summary>Auto-captured exception screenshot metadata. JsonUtility always serializes this
+        /// nested object, so an empty/zero <see cref="ScreenshotMeta.size"/> means "no screenshot";
+        /// a positive size makes the server return <c>data.screenshotUpload</c> (presigned PUT).</summary>
+        public ScreenshotMeta screenshot;
         /// <summary>Correlation: emitter role — "client" (default) or "server" (after StartMatch).</summary>
         public string role;
         /// <summary>Correlation: server id set via <see cref="Tombstack.SetMatchContext"/> ("" when unset).</summary>
@@ -44,6 +48,18 @@ namespace AnkleBreaker.Tombstack
         public string matchId;
         /// <summary>Correlation: this launch's session id (GUID minted at Init).</summary>
         public string sessionId;
+    }
+
+    /// <summary>Screenshot metadata attached to a crash or bug report. The bytes themselves are
+    /// uploaded separately to the presigned <c>screenshotUpload</c> PUT; this only signals presence
+    /// (<c>size &gt; 0</c>) + integrity. JsonUtility always emits it, so <c>size:0</c> means none.</summary>
+    [Serializable]
+    public class ScreenshotMeta
+    {
+        /// <summary>PNG byte length; <c>0</c> ⇒ no screenshot (JsonUtility always serializes the object).</summary>
+        public int size;
+        /// <summary>Lowercase hex SHA-256 of the PNG bytes ("" when no screenshot).</summary>
+        public string sha256;
     }
 
     /// <summary>One entry of the recent-log trail attached to crashes and bug reports.</summary>
@@ -83,6 +99,10 @@ namespace AnkleBreaker.Tombstack
         /// <summary>When true the server returns <c>data.logUpload</c> (presigned PUT for the
         /// session log). Same JsonUtility quirk/contract note as <see cref="CrashPayload.log"/>.</summary>
         public bool log;
+        /// <summary>Auto-captured screenshot metadata (same convention as <see cref="CrashPayload.screenshot"/>):
+        /// JsonUtility always emits it, <c>size:0</c> ⇒ none, <c>size &gt; 0</c> ⇒ server returns
+        /// <c>data.screenshotUpload</c>.</summary>
+        public ScreenshotMeta screenshot;
         /// <summary>Correlation: emitter role — "client" (default) or "server" (after StartMatch).</summary>
         public string role;
         /// <summary>Correlation: server id set via <see cref="Tombstack.SetMatchContext"/> ("" when unset).</summary>
@@ -138,6 +158,10 @@ namespace AnkleBreaker.Tombstack
     {
         /// <summary>Presigned session-log upload target (empty url when not granted).</summary>
         public LogUploadTarget logUpload;
+        /// <summary>Presigned screenshot upload target (empty url when no screenshot was offered).
+        /// Same {url,key} shape as <see cref="LogUploadTarget"/>; PUT the PNG bytes here (image/png,
+        /// NO Authorization header — the game token must never reach the storage host).</summary>
+        public LogUploadTarget screenshotUpload;
     }
 
     /// <summary>Presigned S3 PUT target for the session log (content-type text/plain).</summary>
