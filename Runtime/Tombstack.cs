@@ -164,6 +164,9 @@ namespace AnkleBreaker.Tombstack
         private static string _buildVersion = "unknown";
         private static string _os = "other";
         private static string _arch = "other";
+        // Static device/runtime context, snapshotted once at Init on the main thread (SystemInfo/Screen
+        // are main-thread-only) and attached to every crash/bug report. Null if capture failed.
+        private static DevicePayload _device;
 
         // Ring buffer of recent log lines, attached to crashes/bugs as the "breadcrumb" trail.
         // Entries are preallocated once and mutated in place: recording a breadcrumb allocates
@@ -255,6 +258,10 @@ namespace AnkleBreaker.Tombstack
                 _buildVersion = TombstackPlatform.BuildVersion();
                 _os = TombstackPlatform.Os();
                 _arch = TombstackPlatform.Arch();
+                // Snapshot device/runtime context on the main thread (SystemInfo/Screen are main-thread
+                // only); cached + attached to crash/bug reports. Fail-soft — never blocks Init.
+                try { _device = TombstackDevice.Capture(); }
+                catch (Exception e) { TombstackLog.Warn($"device capture failed: {e.Message}"); }
                 _sessionId = newId();
                 _initialized = true;
 
@@ -515,6 +522,7 @@ namespace AnkleBreaker.Tombstack
                     serverId = _serverId,
                     matchId = _matchId,
                     sessionId = _sessionId,
+                    device = _device,
                 };
                 if (_captureScreenshotOnBugReport && TombstackBehaviour.HasInstance)
                 {
@@ -846,6 +854,7 @@ namespace AnkleBreaker.Tombstack
                 serverId = _serverId,
                 matchId = _matchId,
                 sessionId = _sessionId,
+                device = _device,
             };
             // Opt-in exception screenshot: synchronous best-effort grab (main-thread only, throttled).
             // Never delays or drops the durable crash — on any miss the crash ships with no screenshot
@@ -1019,6 +1028,7 @@ namespace AnkleBreaker.Tombstack
                 serverId = _serverId,
                 matchId = _matchId,
                 sessionId = previous.sessionId,
+                device = _device, // same physical device; captured this launch (dead session's wasn't persisted)
             };
             TombstackBehaviour.Enqueue(
                 CRASHES_PATH, JsonUtility.ToJson(payload), UploadDurability.WriteAhead,

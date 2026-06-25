@@ -2,6 +2,19 @@
 
 All notable changes to `com.anklebreaker.tombstack`.
 
+## [0.9.3] - 2026-06-25
+### Added — device / runtime context on crash + bug reports
+- Crash and bug reports now carry a **device context** block: model, form factor, OS, CPU (+ core
+  count), system RAM, GPU (+ graphics API), VRAM, display resolution + refresh rate, system language,
+  Unity version, scripting backend (IL2CPP/Mono), and platform. It is snapshotted **once at `Init` on
+  the main thread** (`SystemInfo`/`Screen` are main-thread-only), cached, and attached to every crash
+  + bug report — including unclean-shutdown reports recovered on the next launch. Heartbeats stay lean
+  for CCU and do **not** carry it. **No hardware-unique or personally-identifying id is collected.**
+  Fail-soft: if capture throws, reporting continues without it. New file `TombstackDevice.cs`; new
+  `DevicePayload`. (Wire: crash/bug bodies gain an optional `device` object; every field is optional
+  and the server stores only the non-empty values.) The dashboard shows a **Device** panel on the
+  crash-signature and bug detail pages.
+
 ## [0.9.2] - 2026-06-25
 ### Fixed — session-log + screenshot uploads (HTTP 403)
 - The session-log and bug-report-screenshot uploads now use a **presigned S3 multipart POST**

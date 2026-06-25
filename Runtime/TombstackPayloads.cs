@@ -48,6 +48,9 @@ namespace AnkleBreaker.Tombstack
         public string matchId;
         /// <summary>Correlation: this launch's session id (GUID minted at Init).</summary>
         public string sessionId;
+        /// <summary>Static device/runtime context (model, OS, CPU/GPU, screen, locale, engine).
+        /// Null when capture failed; the server stores only the non-empty fields.</summary>
+        public DevicePayload device;
     }
 
     /// <summary>Screenshot metadata attached to a crash or bug report. The bytes themselves are
@@ -111,6 +114,38 @@ namespace AnkleBreaker.Tombstack
         public string matchId;
         /// <summary>Correlation: this launch's session id (GUID minted at Init).</summary>
         public string sessionId;
+        /// <summary>Static device/runtime context (model, OS, CPU/GPU, screen, locale, engine).
+        /// Null when capture failed; the server stores only the non-empty fields.</summary>
+        public DevicePayload device;
+    }
+
+    /// <summary>Static device + runtime context, snapshotted once at Init on the main thread and attached
+    /// to crash + bug reports. JsonUtility emits every field (empty string / 0 when unknown); the server
+    /// keeps only the non-empty values. Mirrors the server <c>deviceSchema</c>.</summary>
+    [Serializable]
+    public class DevicePayload
+    {
+        public string model;             // SystemInfo.deviceModel
+        public string type;              // SystemInfo.deviceType (Handheld | Desktop | Console | Unknown)
+        public string os;                // SystemInfo.operatingSystem (rich string)
+        public string osFamily;          // SystemInfo.operatingSystemFamily
+        public string cpu;               // SystemInfo.processorType
+        public int cpuCount;             // SystemInfo.processorCount
+        public int ramMB;                // SystemInfo.systemMemorySize
+        public string gpu;               // SystemInfo.graphicsDeviceName
+        public string gpuVendor;         // SystemInfo.graphicsDeviceVendor
+        public string gpuVersion;        // SystemInfo.graphicsDeviceVersion
+        public string gpuApi;            // SystemInfo.graphicsDeviceType
+        public int vramMB;               // SystemInfo.graphicsMemorySize
+        public string screen;            // "<width>x<height>"
+        public float screenDpi;          // Screen.dpi
+        public float refreshRate;        // Screen.currentResolution.refreshRateRatio
+        public string orientation;       // Screen.orientation
+        public bool fullscreen;          // Screen.fullScreen
+        public string language;          // Application.systemLanguage
+        public string engine;            // Application.unityVersion
+        public string scriptingBackend;  // IL2CPP | Mono | Unknown (compile-time)
+        public string platform;          // Application.platform
     }
 
     /// <summary>Session heartbeat wire shape for <c>POST /api/v1/ingest/heartbeats</c> (CCU / Sessions / Fleet).</summary>
