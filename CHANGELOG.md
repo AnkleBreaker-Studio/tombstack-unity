@@ -2,6 +2,18 @@
 
 All notable changes to `com.anklebreaker.tombstack`.
 
+## [0.9.2] - 2026-06-25
+### Fixed — session-log + screenshot uploads (HTTP 403)
+- The session-log and bug-report-screenshot uploads now use a **presigned S3 multipart POST**
+  instead of a PUT. The server presigns a POST (to enforce an upload size cap via
+  `content-length-range`); the SDK was still doing a PUT, so S3 rejected the upload with **HTTP 403**
+  and the log/screenshot was dropped ("payload rejected with HTTP 403; dropping (log upload)"). The
+  crash/bug report itself was unaffected — only the attached log/screenshot failed. The upload path
+  now appends the presigned-POST policy fields (sent as a JsonUtility-parseable `formFields` array)
+  and the file part last, with no Authorization header. Verified end-to-end: a crash's session log
+  now uploads with a 2xx. (Internal wire: ingest responses' `logUpload`/`screenshotUpload` now carry
+  `formFields`.)
+
 ## [0.9.1] - 2026-06-25
 ### Fixed — package now imports correctly via the UPM git URL
 - The published package now includes Unity `.meta` files. Without them, a git-URL / tarball install

@@ -159,19 +159,31 @@ namespace AnkleBreaker.Tombstack
         /// <summary>Presigned session-log upload target (empty url when not granted).</summary>
         public LogUploadTarget logUpload;
         /// <summary>Presigned screenshot upload target (empty url when no screenshot was offered).
-        /// Same {url,key} shape as <see cref="LogUploadTarget"/>; PUT the PNG bytes here (image/png,
+        /// Same shape as <see cref="LogUploadTarget"/>; POST the PNG via multipart/form-data (image/png,
         /// NO Authorization header — the game token must never reach the storage host).</summary>
         public LogUploadTarget screenshotUpload;
     }
 
-    /// <summary>Presigned S3 PUT target for the session log (content-type text/plain).</summary>
+    /// <summary>Presigned S3 POST target for the session log / screenshot (multipart/form-data).</summary>
     [Serializable]
     internal sealed class LogUploadTarget
     {
-        /// <summary>Presigned PUT URL (time-limited; a 403 on PUT means it expired — drop).</summary>
+        /// <summary>Presigned POST URL (the bucket endpoint; time-limited — a 403 means expired/mismatch, drop).</summary>
         public string url;
         /// <summary>S3 object key the server stored on the crash/bug row.</summary>
         public string key;
+        /// <summary>Presigned-POST policy fields ({k,v} pairs) appended to the multipart form, in order,
+        /// before the `file` part (S3 requires `file` last). JsonUtility-parseable — the server also
+        /// sends the raw <c>fields</c> object for browser clients, which JsonUtility cannot read.</summary>
+        public FormField[] formFields;
+    }
+
+    /// <summary>One presigned-POST policy field (key/value), in a JsonUtility-parseable shape.</summary>
+    [Serializable]
+    internal sealed class FormField
+    {
+        public string k;
+        public string v;
     }
 
     // ── Log-pull control-plane DTOs ─────────────────────────────────────────────────────────

@@ -1,6 +1,7 @@
 using System;
 using System.Collections;
 using System.Collections.Concurrent;
+using System.Collections.Generic;
 using System.IO;
 using System.Text;
 using System.Threading;
@@ -407,12 +408,22 @@ namespace AnkleBreaker.Tombstack
             {
                 if (item.IsLogPut)
                 {
-                    var put = new UnityWebRequest(item.AbsoluteUrl, UnityWebRequest.kHttpVerbPUT);
-                    put.uploadHandler = new UploadHandlerRaw(item.RawBody);
-                    put.downloadHandler = new DownloadHandlerBuffer();
-                    put.SetRequestHeader("Content-Type", item.PutContentType ?? CONTENT_TYPE_TEXT_PLAIN);
-                    put.timeout = LOG_UPLOAD_TIMEOUT_SECONDS;
-                    return put;
+                    // Presigned S3 POST (multipart/form-data): append the server's policy fields first,
+                    // then the `file` part LAST (S3 ignores any field after `file`). NO Authorization
+                    // header — the game token must never reach the storage host. S3 enforces the size
+                    // cap via the content-length-range condition baked into the signed policy.
+                    var sections = new List<IMultipartFormSection>();
+                    if (item.FormFields != null)
+                    {
+                        foreach (var f in item.FormFields)
+                            if (f != null && !string.IsNullOrEmpty(f.k))
+                                sections.Add(new MultipartFormDataSection(f.k, f.v ?? string.Empty));
+                    }
+                    var contentType = item.PutContentType ?? CONTENT_TYPE_TEXT_PLAIN;
+                    sections.Add(new MultipartFormFileSection("file", item.RawBody, "upload", contentType));
+                    var post = UnityWebRequest.Post(item.AbsoluteUrl, sections);
+                    post.timeout = LOG_UPLOAD_TIMEOUT_SECONDS;
+                    return post;
                 }
                 var req = new UnityWebRequest(_endpoint + item.Path, UnityWebRequest.kHttpVerbPOST);
                 req.uploadHandler = new UploadHandlerRaw(Encoding.UTF8.GetBytes(item.Body));
@@ -510,6 +521,7 @@ namespace AnkleBreaker.Tombstack
                     return; // previous-session.log already uploaded (or in flight) this launch
 
                 var url = target.url;
+                var formFields = target.formFields;
                 ThreadPool.QueueUserWorkItem(_ =>
                 {
                     try
@@ -519,7 +531,7 @@ namespace AnkleBreaker.Tombstack
                             ? TombstackSessionLog.TryReadPreviousLog(out bytes)
                             : TombstackSessionLog.TryReadCurrentLog(out bytes);
                         if (!ok) return;
-                        enqueueOutbound(PendingUpload.LogPut(url, bytes));
+                        enqueueOutbound(PendingUpload.LogPut(url, bytes, formFields));
                     }
                     catch (Exception e)
                     {
@@ -548,7 +560,7 @@ namespace AnkleBreaker.Tombstack
                 var target = response != null && response.data != null ? response.data.screenshotUpload : null;
                 // JsonUtility default-constructs absent nested objects — the url is the only reliable signal.
                 if (target == null || string.IsNullOrEmpty(target.url)) return;
-                enqueueOutbound(PendingUpload.ScreenshotPut(target.url, item.ScreenshotBytes));
+                enqueueOutbound(PendingUpload.ScreenshotPut(target.url, item.ScreenshotBytes, target.formFields));
             }
             catch (Exception e)
             {
@@ -683,7 +695,8 @@ namespace AnkleBreaker.Tombstack
             public readonly bool IsLogPut;            // raw PUT to AbsoluteUrl instead of a JSON POST
             public readonly string AbsoluteUrl;
             public readonly byte[] RawBody;
-            public readonly string PutContentType;    // content-type for a raw PUT (null ⇒ text/plain)
+            public readonly string PutContentType;    // content-type for the upload (null ⇒ text/plain)
+            public readonly FormField[] FormFields;    // presigned-POST policy fields (log/screenshot uploads)
             // Screenshot carried with an ingest POST: chase data.screenshotUpload on 2xx and PUT these
             // bytes. Mutable (set right after Post by the capture path); best-effort, never persisted.
             public bool RequestedScreenshot;
@@ -694,7 +707,7 @@ namespace AnkleBreaker.Tombstack
             private PendingUpload(
                 string path, string body, UploadDurability durability, string filePath,
                 bool requestedLog, bool fromPreviousSession, bool isLogPut, string absoluteUrl, byte[] rawBody,
-                string putContentType)
+                string putContentType, FormField[] formFields)
             {
                 Path = path;
                 Body = body;
@@ -706,6 +719,7 @@ namespace AnkleBreaker.Tombstack
                 AbsoluteUrl = absoluteUrl;
                 RawBody = rawBody;
                 PutContentType = putContentType;
+                FormFields = formFields;
             }
 
             /// <summary>A JSON ingest POST (crash, bug, event, heartbeat).</summary>
@@ -714,23 +728,24 @@ namespace AnkleBreaker.Tombstack
                 bool requestedLog, bool fromPreviousSession)
             {
                 return new PendingUpload(
-                    path, body, durability, filePath, requestedLog, fromPreviousSession, false, null, null, null);
+                    path, body, durability, filePath, requestedLog, fromPreviousSession, false, null, null, null, null);
             }
 
-            /// <summary>A presigned session-log PUT. Retries with the shared backoff but is
-            /// never persisted (PersistOnFailure is bypassed for log PUTs in handleResult).</summary>
-            public static PendingUpload LogPut(string absoluteUrl, byte[] bytes)
+            /// <summary>A presigned session-log upload — a multipart/form-data POST to the presigned S3
+            /// URL (policy fields + file). Retries with the shared backoff but is never persisted (the
+            /// presigned URL is dead by the next launch anyway).</summary>
+            public static PendingUpload LogPut(string absoluteUrl, byte[] bytes, FormField[] formFields)
             {
                 return new PendingUpload(
-                    null, null, UploadDurability.PersistOnFailure, null, false, false, true, absoluteUrl, bytes, null);
+                    null, null, UploadDurability.PersistOnFailure, null, false, false, true, absoluteUrl, bytes, null, formFields);
             }
 
-            /// <summary>A presigned screenshot PUT (image/png). Best-effort like a log PUT.</summary>
-            public static PendingUpload ScreenshotPut(string absoluteUrl, byte[] bytes)
+            /// <summary>A presigned screenshot upload (image/png), multipart POST. Best-effort like a log upload.</summary>
+            public static PendingUpload ScreenshotPut(string absoluteUrl, byte[] bytes, FormField[] formFields)
             {
                 return new PendingUpload(
                     null, null, UploadDurability.PersistOnFailure, null, false, false, true, absoluteUrl, bytes,
-                    CONTENT_TYPE_IMAGE_PNG);
+                    CONTENT_TYPE_IMAGE_PNG, formFields);
             }
         }
 
