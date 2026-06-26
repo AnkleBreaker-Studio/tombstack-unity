@@ -18,5 +18,12 @@ namespace AnkleBreaker.Tombstack
             try { Debug.LogWarning(PREFIX + message); }
             catch { /* logging must never take the game down */ }
         }
+
+        /// <summary>Log an informational SDK line (e.g. a benign decision like skipping a report). Never throws.</summary>
+        internal static void Info(string message)
+        {
+            try { Debug.Log(PREFIX + message); }
+            catch { /* logging must never take the game down */ }
+        }
     }
 }

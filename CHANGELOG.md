@@ -2,6 +2,23 @@
 
 All notable changes to `com.anklebreaker.tombstack`.
 
+## [0.9.4] - 2026-06-26
+### Fixed — unclean-shutdown no longer fires on a normal close / Play Mode stop
+- The "Previous session ended without a clean shutdown" report was sent for **any** session that
+  didn't exit cleanly — including the Unity Editor **Play Mode stop** and a normal mobile **app close /
+  OS background-kill** (which fire `OnApplicationPause(true)` before the OS reclaims the process).
+  These are not crashes, so the SDK was reporting a lot of phantom crashes.
+- The SDK now records the app's **foreground/background state** (and editor origin) in the session
+  marker, updated on `OnApplicationPause`, and on the next launch only reports a crash when the
+  previous session died **while foreground-active** — the genuine native-crash / OOM case. An Editor
+  Play Mode stop and a backgrounded-then-killed app are classified as normal terminations and
+  **suppressed** (mirrors how Sentry/Unity only count a session as crashed with real crash evidence).
+- The marker write on backgrounding happens **before** the (slower) log flush so the state survives an
+  OS kill mid-pause; the marker is published only after a successful write; `_current` is `volatile`
+  for the off-thread Write / main-thread update hand-off. The foreground crash report keeps the
+  `unclean-shutdown` signature (group continuity) with a clearer message. (Forward-compatible: native
+  crash capture, when it lands, slots into the same foreground branch.)
+
 ## [0.9.3] - 2026-06-25
 ### Added — device / runtime context on crash + bug reports
 - Crash and bug reports now carry a **device context** block: model, form factor, OS, CPU (+ core

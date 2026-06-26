@@ -103,9 +103,12 @@ namespace AnkleBreaker.Tombstack
         // §K1: bound on the per-name sample-rate map so a misbehaving game can't grow it unbounded.
         private const int MAX_SAMPLE_RATES = 128;
 
+        // Signature is kept stable so existing reports keep grouping. The hint is now accurate for the
+        // ONLY case we still report: the app died while foreground-active (a clean background kill, a
+        // user close, and an Editor Play Mode stop are classified out and never reach this report).
         private const string UNCLEAN_SIGNATURE = "unclean-shutdown";
         private const string UNCLEAN_STACK_HINT =
-            "Previous session ended without a clean shutdown (hard crash, OOM kill, or force quit)";
+            "App terminated unexpectedly while running — no clean shutdown (likely a native crash or out-of-memory)";
 
         // Internal (not private): TombstackBehaviour identifies restored crash records by path.
         internal const string CRASHES_PATH = "/api/v1/ingest/crashes";
@@ -164,6 +167,9 @@ namespace AnkleBreaker.Tombstack
         private static string _buildVersion = "unknown";
         private static string _os = "other";
         private static string _arch = "other";
+        // Cached at Init (main thread): whether this run is the Unity Editor. A Play Mode stop leaves a
+        // marker like any unclean exit, but it is NOT a player crash — the reporter suppresses it.
+        private static bool _isEditor;
         // Static device/runtime context, snapshotted once at Init on the main thread (SystemInfo/Screen
         // are main-thread-only) and attached to every crash/bug report. Null if capture failed.
         private static DevicePayload _device;
@@ -262,6 +268,7 @@ namespace AnkleBreaker.Tombstack
                 // only); cached + attached to crash/bug reports. Fail-soft — never blocks Init.
                 try { _device = TombstackDevice.Capture(); }
                 catch (Exception e) { TombstackLog.Warn($"device capture failed: {e.Message}"); }
+                _isEditor = Application.isEditor;
                 _sessionId = newId();
                 _initialized = true;
 
@@ -980,6 +987,33 @@ namespace AnkleBreaker.Tombstack
         }
 
         /// <summary>
+        /// Record an app foreground/background transition into the session marker. Called from
+        /// TombstackBehaviour.OnApplicationPause. This is the signal that lets the next launch tell a
+        /// normal background kill (user closed the app / OS suspended then reclaimed it) from a real
+        /// foreground crash. No-op until the marker has been written (capture allowed).
+        /// </summary>
+        internal static void notifyAppPause(bool paused)
+        {
+            TombstackSessionMarker.UpdateState(paused, nowIso());
+        }
+
+        /// <summary>How a previous session ended, inferred from its surviving marker.</summary>
+        private enum TerminationKind { Foreground, Backgrounded, Editor }
+
+        /// <summary>
+        /// Pure classification of a surviving marker. Only a death while FOREGROUND-ACTIVE is treated as
+        /// a crash. An Editor Play Mode stop and a backgrounded-then-killed app (the normal mobile close /
+        /// OS reclaim path) are normal terminations, not crashes — mirrors how Sentry/Unity only count a
+        /// session as "crashed" with real crash evidence.
+        /// </summary>
+        private static TerminationKind classifyTermination(SessionMarkerData m)
+        {
+            if (m.isEditor) return TerminationKind.Editor;
+            if (m.backgrounded) return TerminationKind.Backgrounded;
+            return TerminationKind.Foreground;
+        }
+
+        /// <summary>
         /// Start dirty-session tracking exactly once per launch, the first time capture is
         /// allowed (at Init, or at SetConsent(true) when consent was required): write this
         /// session's marker and report the previous session's unclean shutdown, if any.
@@ -991,7 +1025,7 @@ namespace AnkleBreaker.Tombstack
                 if (_sessionTrackingStarted || !_detectUncleanShutdown) return;
                 _sessionTrackingStarted = true;
             }
-            TombstackSessionMarker.Write(_sessionId, nowIso(), _buildVersion, _os, _arch);
+            TombstackSessionMarker.Write(_sessionId, nowIso(), _buildVersion, _os, _arch, _isEditor);
             var previous = _previousMarker;
             _previousMarker = null;
             if (previous != null) reportUncleanShutdown(previous);
@@ -1008,9 +1042,24 @@ namespace AnkleBreaker.Tombstack
         private static void reportUncleanShutdown(SessionMarkerData previous)
         {
             if (TombstackBehaviour.HasRestoredCrash) return;
+
+            // Only a death while FOREGROUND-ACTIVE is a crash. A Play Mode stop in the Editor and a
+            // backgrounded-then-killed app (user closed it / OS reclaimed a suspended app) are normal
+            // terminations — suppress them so they don't show up as phantom crashes.
+            var kind = classifyTermination(previous);
+            if (kind != TerminationKind.Foreground)
+            {
+                TombstackLog.Info($"previous session ended normally ({kind.ToString().ToLowerInvariant()}); not reporting a crash");
+                return;
+            }
+
             var payload = new CrashPayload
             {
-                occurredAtIso = nowIso(), // detection time; the previous start rides in the marker only
+                // Detection time (this launch). The dead session's own timestamps ride in the marker,
+                // but they are NOT used here: a crash whose session started/last-lived outside the
+                // server's retention window would be rejected, so we date it at the (always-valid)
+                // moment of detection — the marker's lastAliveIso remains available for future use.
+                occurredAtIso = nowIso(),
                 buildVersion = string.IsNullOrEmpty(previous.buildVersion) ? _buildVersion : previous.buildVersion,
                 os = string.IsNullOrEmpty(previous.os) ? _os : previous.os,
                 arch = string.IsNullOrEmpty(previous.arch) ? _arch : previous.arch,

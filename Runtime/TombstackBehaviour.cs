@@ -263,11 +263,27 @@ namespace AnkleBreaker.Tombstack
             catch (System.Exception e) { TombstackLog.Warn("flush failed: " + e.Message); }
         }
 
-        // Unity message — flush buffered analytics when backgrounded (mobile) so a suspended/killed
-        // app still reports. Engine-invoked; must stay PascalCase.
+        // Unity message — engine-invoked; must stay PascalCase. Two jobs on backgrounding (mobile):
+        // (1) flush buffered analytics + the session log so a suspended/killed app still reports, and
+        // (2) record the foreground→background transition in the session marker. That transition is
+        // what lets the next launch tell a normal background kill (user closed the app / OS reclaim)
+        // from a real foreground crash — without it, every backgrounded-then-killed app looked like a
+        // crash. Both transitions (pause + resume) are recorded so the marker reflects the live state.
         private void OnApplicationPause(bool paused)
         {
-            try { if (paused) FlushBatches(); }
+            try
+            {
+                // Update the marker FIRST: it is a tiny (<1 KB) write, whereas the log flush below can be
+                // slow. On mobile the OS may kill the app any time during this pause window, so the
+                // backgrounded flag must be on disk before the slow flush — otherwise a kill mid-flush
+                // leaves backgrounded=false and the next launch reports a phantom crash.
+                Tombstack.notifyAppPause(paused);
+                if (paused)
+                {
+                    FlushBatches();
+                    TombstackSessionLog.FlushNow(); // persist the log tail before the OS suspends/kills us
+                }
+            }
             catch (System.Exception e) { TombstackLog.Warn("flush failed: " + e.Message); }
         }
 
