@@ -41,6 +41,9 @@ namespace AnkleBreaker.Tombstack
         [Tooltip("Automatically add a breadcrumb when a scene loads or the active scene changes.")]
         [SerializeField] private bool _autoSceneBreadcrumbs = true;
 
+        [Tooltip("When ON (default), automatically-caught exceptions are reported even while running in the Unity Editor. Turn OFF to silence automatic exception reports during in-Editor testing — manual Tombstack.ReportException still sends, and shipped builds are unaffected.")]
+        [SerializeField] private bool _sendExceptionsInEditor = true;
+
         [Tooltip("Attach an automatic screenshot of the current frame to player bug reports (ON by default — players expect a report to capture what they see).")]
         [SerializeField] private bool _captureScreenshotOnBugReport = true;
 
@@ -63,6 +66,7 @@ namespace AnkleBreaker.Tombstack
         public bool DetectUncleanShutdown => _detectUncleanShutdown;
         public bool AutoRttMetric => _autoRttMetric;
         public bool AutoSceneBreadcrumbs => _autoSceneBreadcrumbs;
+        public bool SendExceptionsInEditor => _sendExceptionsInEditor;
         public bool CaptureScreenshotOnBugReport => _captureScreenshotOnBugReport;
         public bool CaptureScreenshotOnException => _captureScreenshotOnException;
         public int ScreenshotMaxDimension => _screenshotMaxDimension;

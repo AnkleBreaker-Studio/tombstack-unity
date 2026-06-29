@@ -36,6 +36,8 @@
             <ui:Label text="Written into the TombstackConfig asset the game ships with." class="tmb-dim" style="margin-bottom: 8px;" />
             <uie:FloatField name="set-heartbeat" label="HEARTBEAT (S)" />
             <ui:Toggle name="set-consent" label="REQUIRE CONSENT" />
+            <ui:Toggle name="set-send-exceptions-editor" label="SEND EXCEPTIONS IN EDITOR" />
+            <ui:Label text="When off, automatically-caught exceptions are not reported while you play in the Editor. Manual Tombstack.ReportException and shipped builds are unaffected." class="tmb-dim" style="margin-top: 4px;" />
         </ui:VisualElement>
     </ui:VisualElement>
 </ui:UXML>

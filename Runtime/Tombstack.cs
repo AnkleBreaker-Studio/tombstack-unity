@@ -123,6 +123,10 @@ namespace AnkleBreaker.Tombstack
         private static volatile bool _consent = true;
         // v0.5 autonomy toggles — default ON; overridden from TombstackConfigSO at auto-init.
         private static bool _autoCaptureExceptions = true;
+        // When false AND running in the Editor, AUTOMATIC exception capture is suppressed so in-Editor
+        // testing doesn't spam reports. Default true (keeps prior behaviour); manual ReportException is
+        // never affected, and shipped builds (not _isEditor) always capture.
+        private static bool _sendExceptionsInEditor = true;
         private static bool _uploadLogs = true;
         private static bool _detectUncleanShutdown = true;
         // Screenshot auto-capture (see TombstackScreenshot). Bug capture defaults ON; exception
@@ -234,6 +238,7 @@ namespace AnkleBreaker.Tombstack
                 _exceptionScreenshotThrottleSeconds = config.ExceptionScreenshotThrottleSeconds;
                 _autoRttMetric = config.AutoRttMetric;
                 _autoSceneBreadcrumbs = config.AutoSceneBreadcrumbs;
+                _sendExceptionsInEditor = config.SendExceptionsInEditor; // read before Init so the hook-registration gate sees it
                 Init(config.GameToken, config.Endpoint, config.HeartbeatIntervalSeconds);
             }
             catch (Exception e)
@@ -287,7 +292,9 @@ namespace AnkleBreaker.Tombstack
 
                 // Threaded so exceptions on background threads are captured too.
                 Application.logMessageReceivedThreaded += handleLog;
-                if (_autoCaptureExceptions) hookBackgroundExceptionSources();
+                // Don't register the background exception hooks at all in an Editor session that opted
+                // out of in-Editor auto-capture (shipped builds — not _isEditor — always register).
+                if (_autoCaptureExceptions && (!_isEditor || _sendExceptionsInEditor)) hookBackgroundExceptionSources();
                 Application.quitting += onQuitting;
 
                 TombstackBehaviour.Bootstrap(_endpoint, _gameToken, _sessionId, heartbeatIntervalSeconds);
@@ -822,7 +829,10 @@ namespace AnkleBreaker.Tombstack
                     return;
                 }
 
-                if (!_autoCaptureExceptions) return;
+                // Suppress AUTOMATIC capture when the toggle is off, or in an Editor session that opted
+                // out of in-Editor reporting. Manual Tombstack.ReportException is unaffected (it does not
+                // pass through handleLog); breadcrumbs + the session log above this line still record.
+                if (!_autoCaptureExceptions || (_isEditor && !_sendExceptionsInEditor)) return;
                 captureException(condition, stackTrace);
             }
             catch (Exception e)

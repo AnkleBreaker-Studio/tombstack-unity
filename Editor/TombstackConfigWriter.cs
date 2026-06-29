@@ -19,6 +19,7 @@ namespace AnkleBreaker.Tombstack.Editor
         private const string PROP_GAME_TOKEN = "_gameToken";
         private const string PROP_HEARTBEAT = "_heartbeatIntervalSeconds";
         private const string PROP_REQUIRE_CONSENT = "_requireConsent";
+        private const string PROP_SEND_EXCEPTIONS_IN_EDITOR = "_sendExceptionsInEditor";
         private const string TOKEN_PREFIX = "tmb_";
         private const string TOKEN_PLACEHOLDER = "tmb_REPLACE_ME";
 
@@ -95,6 +96,13 @@ namespace AnkleBreaker.Tombstack.Editor
         public static void WriteRequireConsent(bool requireConsent)
         {
             writeProperty(so => so.FindProperty(PROP_REQUIRE_CONSENT).boolValue = requireConsent);
+        }
+
+        /// <summary>Toggle whether automatically-caught exceptions are reported while in the Editor.</summary>
+        /// <param name="send">True (default) to report in-Editor too; false to silence auto-capture in the Editor.</param>
+        public static void WriteSendExceptionsInEditor(bool send)
+        {
+            writeProperty(so => so.FindProperty(PROP_SEND_EXCEPTIONS_IN_EDITOR).boolValue = send);
         }
 
         /// <summary>Clear the SDK token from the config asset (unlink), keeping the asset.</summary>

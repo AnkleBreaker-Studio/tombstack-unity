@@ -21,6 +21,7 @@ namespace AnkleBreaker.Tombstack.Editor
         private static Button _endpointApplyButton;
         private static FloatField _heartbeatField;
         private static Toggle _consentToggle;
+        private static Toggle _sendExceptionsEditorToggle;
         private static Button _signOutButton;
         private static Button _unlinkButton;
         private static Button _openHubButton;
@@ -49,6 +50,7 @@ namespace AnkleBreaker.Tombstack.Editor
             _endpointApplyButton = rootElement.Q<Button>("set-endpoint-apply");
             _heartbeatField = rootElement.Q<FloatField>("set-heartbeat");
             _consentToggle = rootElement.Q<Toggle>("set-consent");
+            _sendExceptionsEditorToggle = rootElement.Q<Toggle>("set-send-exceptions-editor");
             _signOutButton = rootElement.Q<Button>("set-signout");
             _unlinkButton = rootElement.Q<Button>("set-unlink");
             _openHubButton = rootElement.Q<Button>("set-open-hub");
@@ -59,6 +61,7 @@ namespace AnkleBreaker.Tombstack.Editor
             _endpointApplyButton?.RegisterCallback<ClickEvent>(onEndpointApplyClicked);
             _heartbeatField?.RegisterValueChangedCallback(onHeartbeatChanged);
             _consentToggle?.RegisterValueChangedCallback(onConsentChanged);
+            _sendExceptionsEditorToggle?.RegisterValueChangedCallback(onSendExceptionsEditorChanged);
             _signOutButton?.RegisterCallback<ClickEvent>(onSignOutClicked);
             _unlinkButton?.RegisterCallback<ClickEvent>(onUnlinkClicked);
             _openHubButton?.RegisterCallback<ClickEvent>(onOpenHubClicked);
@@ -73,6 +76,7 @@ namespace AnkleBreaker.Tombstack.Editor
             _endpointApplyButton?.UnregisterCallback<ClickEvent>(onEndpointApplyClicked);
             _heartbeatField?.UnregisterValueChangedCallback(onHeartbeatChanged);
             _consentToggle?.UnregisterValueChangedCallback(onConsentChanged);
+            _sendExceptionsEditorToggle?.UnregisterValueChangedCallback(onSendExceptionsEditorChanged);
             _signOutButton?.UnregisterCallback<ClickEvent>(onSignOutClicked);
             _unlinkButton?.UnregisterCallback<ClickEvent>(onUnlinkClicked);
             _openHubButton?.UnregisterCallback<ClickEvent>(onOpenHubClicked);
@@ -80,6 +84,7 @@ namespace AnkleBreaker.Tombstack.Editor
             _endpointApplyButton = null;
             _heartbeatField = null;
             _consentToggle = null;
+            _sendExceptionsEditorToggle = null;
             _signOutButton = null;
             _unlinkButton = null;
             _openHubButton = null;
@@ -105,10 +110,12 @@ namespace AnkleBreaker.Tombstack.Editor
             bool hasConfig = config != null;
             _heartbeatField?.SetEnabled(hasConfig);
             _consentToggle?.SetEnabled(hasConfig);
+            _sendExceptionsEditorToggle?.SetEnabled(hasConfig);
             if (hasConfig)
             {
                 _heartbeatField?.SetValueWithoutNotify(config.HeartbeatIntervalSeconds);
                 _consentToggle?.SetValueWithoutNotify(config.RequireConsent);
+                _sendExceptionsEditorToggle?.SetValueWithoutNotify(config.SendExceptionsInEditor);
                 showStatus(null);
             }
             else
@@ -128,6 +135,9 @@ namespace AnkleBreaker.Tombstack.Editor
 
         private static void onConsentChanged(ChangeEvent<bool> evt)
             => TombstackConfigWriter.WriteRequireConsent(evt.newValue);
+
+        private static void onSendExceptionsEditorChanged(ChangeEvent<bool> evt)
+            => TombstackConfigWriter.WriteSendExceptionsInEditor(evt.newValue);
 
         private static async void onSignOutClicked(ClickEvent evt)
         {

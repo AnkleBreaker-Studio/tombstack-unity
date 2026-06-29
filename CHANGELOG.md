@@ -2,6 +2,17 @@
 
 All notable changes to `com.anklebreaker.tombstack`.
 
+## [0.9.5] - 2026-06-26
+### Added — "Send exceptions in Editor" toggle
+- New config option **`Send exceptions in Editor`** (Project Settings ▸ Tombstack, or the
+  `TombstackConfig` inspector), **ON by default**. When turned **off**, the SDK no longer reports
+  **automatically-caught** exceptions while you're playing in the Unity Editor — useful when
+  iterating, since test exceptions would otherwise each send a crash report.
+- Scope is deliberately narrow: it gates only the automatic capture paths (Unity log dispatch +
+  the AppDomain / unobserved-Task background hooks) and only in the Editor. **Manual
+  `Tombstack.ReportException` still sends**, breadcrumbs + the session log still record, and
+  **shipped builds are completely unaffected** (they always capture).
+
 ## [0.9.4] - 2026-06-26
 ### Fixed — unclean-shutdown no longer fires on a normal close / Play Mode stop
 - The "Previous session ended without a clean shutdown" report was sent for **any** session that
