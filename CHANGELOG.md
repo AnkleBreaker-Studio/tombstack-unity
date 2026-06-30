@@ -2,6 +2,22 @@
 
 All notable changes to `com.anklebreaker.tombstack`.
 
+## [0.9.6] - 2026-06-30
+### Added — server region/hostname + per-user custom metadata
+- **`Tombstack.SetServerInfo(string region, string hostname)`** — tag a dedicated server's region and
+  hostname so the Fleet/Servers dashboard shows where the box runs (no more "no region · no hostname").
+  Server-lifetime: call it **once on allocation** (e.g. region from your Multiplay launch args, hostname
+  from `Environment.MachineName`); both persist across matches and are not cleared by `EndMatch`. Clamped
+  to the server contract (64 / 255). They ride every heartbeat and seed the server's fleet record (an
+  operator's manual dashboard edit to those fields is preserved).
+- **`Tombstack.SetUserMetadata(Dictionary<string,string> metadata)`** — attach a generic, extensible set
+  of attributes to the current player. **Merge** semantics: keys merge into the existing set, and a key
+  with a `null`/empty value **removes** it. A **`displayName`** key becomes the player's primary label on
+  the Sessions/Users dashboard (the rest show as a key/value list). Keys/values are trimmed + clamped
+  (64 / 512) and the set is capped at 16 keys. Keyed to the current user — cleared when `SetUser` switches
+  player. Sent on the heartbeat with change-detection (no repeat writes for a steady map; a full clear
+  propagates so a removed name doesn't linger). Replaces smuggling the username into event properties.
+
 ## [0.9.5] - 2026-06-26
 ### Added — "Send exceptions in Editor" toggle
 - New config option **`Send exceptions in Editor`** (Project Settings ▸ Tombstack, or the

@@ -82,11 +82,19 @@ namespace AnkleBreaker.Tombstack
         private const int MAX_CATEGORY = 32;
         private const int MAX_USER_ID = 128;
         private const int MAX_STEAM_ID = 32;
+        // Per-user custom metadata (displayName + studio attrs): a generic string map sent on heartbeats.
+        // Caps/clamps mirror the server contract (user-metadata.ts) — bounded so a game can't grow it unbounded.
+        private const int MAX_USER_METADATA_KEYS = 16;
+        private const int MAX_USER_METADATA_KEY = 64;
+        private const int MAX_USER_METADATA_VALUE = 512;
         // A pull-request reason is clamped to the server contract's MAX_PULL_REASON (280) — NOT
         // MAX_BUG_MESSAGE: a longer reason would be rejected (400) and dropped server-side.
         private const int MAX_PULL_REASON = 280;
         // Correlation ids (serverId / matchId) clamp to the server contract's max(128).
         private const int MAX_CONTEXT_ID = 128;
+        // Server metadata (region / hostname) clamp to the server contract maxima (64 / 255).
+        private const int MAX_REGION = 64;
+        private const int MAX_HOSTNAME = 255;
         private const int SIGNATURE_FRAMES = 8;
         private const int SIGNATURE_HEX_LENGTH = 32;
         private const int MAX_BREADCRUMBS = 50;
@@ -143,12 +151,25 @@ namespace AnkleBreaker.Tombstack
         private static string _sessionId;
         private static string _userId;
         private static string _steamId;
+        // Per-user custom metadata, merged via SetUserMetadata, sent as a "metadata" object on each
+        // heartbeat. Keyed to _userId — cleared when SetUser changes the player. Locked: read off-thread.
+        private static readonly Dictionary<string, string> _userMetadata = new Dictionary<string, string>(StringComparer.Ordinal);
+        private static readonly object _userMetadataLock = new object();
+        // The metadata JSON last SENT on a heartbeat ("{}" = none). Change-detection: a beat carries the
+        // "metadata" field only when the current map differs from this — so a steady map costs no repeat
+        // server writes, and clearing to empty sends "{}" once so the server deletes the stored record.
+        private static string _lastSentUserMetadataJson = "{}";
         // Correlation context: stamped on every payload so server<->session<->match<->player
         // linking is exact. Defaults make a plain client send role="client" + empty ids ("" is
         // cleaned to undefined server-side, like userId). Set via SetMatchContext/StartMatch.
         private static string _role = "client";
         private static string _serverId = "";
         private static string _matchId = "";
+        // Server-lifetime fleet metadata, set once via SetServerInfo on a dedicated server. Like _serverId
+        // (and unlike _matchId) these persist across matches and are NOT cleared by EndMatch — the box keeps
+        // its region/hostname for its whole lifetime. "" when unset (cleaned to undefined server-side).
+        private static string _region = "";
+        private static string _hostname = "";
 
         // Dirty-session state captured at Init, consumed when capture first becomes allowed.
         private static SessionMarkerData _previousMarker;
@@ -210,6 +231,43 @@ namespace AnkleBreaker.Tombstack
         /// <summary>Current user id ("" or null when anonymous) for heartbeat attribution.</summary>
         internal static string CurrentUserId => _userId;
 
+        /// <summary>
+        /// The user-metadata object to splice into THIS heartbeat, or null to omit it. Change-detection:
+        /// returns the current map as a JSON object only when it differs from the last one sent — so an
+        /// unchanged map costs no repeat server writes, and a full clear returns <c>"{}"</c> exactly once
+        /// (the server deletes the stored record on an empty object). JsonUtility can't serialize a
+        /// Dictionary, so the map is hand-serialized (keys/values escaped via TombstackJson). Thread-safe.
+        /// </summary>
+        internal static string ConsumeUserMetadataForHeartbeat()
+        {
+            lock (_userMetadataLock)
+            {
+                var current = buildUserMetadataJsonLocked();
+                if (string.Equals(current, _lastSentUserMetadataJson, StringComparison.Ordinal)) return null; // unchanged → omit
+                _lastSentUserMetadataJson = current;
+                return current; // changed (incl. "{}" for a clear) → send
+            }
+        }
+
+        /// <summary>Serialize _userMetadata to a JSON object ("{}" when empty). Caller must hold _userMetadataLock.</summary>
+        private static string buildUserMetadataJsonLocked()
+        {
+            if (_userMetadata.Count == 0) return "{}";
+            var sb = new StringBuilder();
+            sb.Append('{');
+            bool first = true;
+            foreach (var pair in _userMetadata)
+            {
+                if (!first) sb.Append(',');
+                first = false;
+                TombstackJson.AppendString(sb, pair.Key);
+                sb.Append(':');
+                TombstackJson.AppendString(sb, pair.Value);
+            }
+            sb.Append('}');
+            return sb.ToString();
+        }
+
         /// <summary>Current emitter role ("client" | "server") for heartbeat correlation.</summary>
         internal static string CurrentRole => _role;
 
@@ -218,6 +276,12 @@ namespace AnkleBreaker.Tombstack
 
         /// <summary>Current match id ("" when unset) for heartbeat correlation.</summary>
         internal static string CurrentMatchId => _matchId;
+
+        /// <summary>Current server region ("" when unset) for heartbeat fleet metadata.</summary>
+        internal static string CurrentRegion => _region;
+
+        /// <summary>Current server hostname ("" when unset) for heartbeat fleet metadata.</summary>
+        internal static string CurrentHostname => _hostname;
 
         /// <summary>Auto-init from a <c>Resources/TombstackConfig</c> asset, if present and enabled.</summary>
         [RuntimeInitializeOnLoadMethod(RuntimeInitializeLoadType.BeforeSceneLoad)]
@@ -315,8 +379,54 @@ namespace AnkleBreaker.Tombstack
         /// <param name="steamId">Optional Steam64 id (e.g. "7656119...").</param>
         public static void SetUser(string userId, string steamId = null)
         {
-            _userId = truncate(userId, MAX_USER_ID);
+            var next = truncate(userId, MAX_USER_ID);
+            // Metadata belongs to the player — drop it when SWITCHING away from a set user (idA→idB, or
+            // id→null logout), so one player's displayName/attrs never bleed onto the next. NOT on the
+            // initial null→id call, so metadata set just before the first SetUser(id) survives.
+            if (!string.IsNullOrEmpty(_userId) && !string.Equals(next, _userId, StringComparison.Ordinal))
+            {
+                lock (_userMetadataLock) { _userMetadata.Clear(); _lastSentUserMetadataJson = "{}"; }
+            }
+            _userId = next;
             _steamId = truncate(steamId, MAX_STEAM_ID);
+        }
+
+        /// <summary>
+        /// Attach generic custom metadata to the current player — a flat string→string map surfaced on the
+        /// Sessions/Users dashboard (a <c>displayName</c> key becomes the player's primary label, the rest a
+        /// key/value list). MERGE semantics: the given keys are merged into the existing set; a key whose
+        /// value is null/empty REMOVES that key. Keys/values are clamped (64 / 512 chars) and the set is
+        /// capped at 16 keys (a new key over the cap is dropped with a warning; existing keys still update).
+        /// Keyed to the current user — cleared when <see cref="SetUser"/> changes the player. Fail-silent;
+        /// thread-safe. The map rides every subsequent heartbeat and lands on the player's record.
+        /// </summary>
+        /// <param name="metadata">Attributes to merge, e.g. { "displayName": "Bob", "guild": "Wolves" }.</param>
+        public static void SetUserMetadata(Dictionary<string, string> metadata)
+        {
+            try
+            {
+                if (metadata == null) return;
+                lock (_userMetadataLock)
+                {
+                    foreach (var pair in metadata)
+                    {
+                        var key = truncate(pair.Key?.Trim(), MAX_USER_METADATA_KEY); // trim to match server normalization
+                        if (string.IsNullOrEmpty(key)) continue;
+                        // A null / empty / whitespace value REMOVES the key (mirrors the server treating empty as unset).
+                        if (string.IsNullOrWhiteSpace(pair.Value)) { _userMetadata.Remove(key); continue; }
+                        if (!_userMetadata.ContainsKey(key) && _userMetadata.Count >= MAX_USER_METADATA_KEYS)
+                        {
+                            TombstackLog.Warn($"SetUserMetadata: dropping '{key}' (over {MAX_USER_METADATA_KEYS}-key cap)");
+                            continue;
+                        }
+                        _userMetadata[key] = truncate(pair.Value.Trim(), MAX_USER_METADATA_VALUE);
+                    }
+                }
+            }
+            catch (Exception e)
+            {
+                TombstackLog.Warn($"SetUserMetadata failed: {e.Message}");
+            }
         }
 
         /// <summary>
@@ -337,6 +447,32 @@ namespace AnkleBreaker.Tombstack
             catch (Exception e)
             {
                 TombstackLog.Warn($"SetMatchContext failed: {e.Message}");
+            }
+        }
+
+        /// <summary>
+        /// Tag this dedicated server's region + hostname so the Fleet/Servers dashboard shows where the
+        /// box runs. SERVER-LIFETIME: set once on allocation (e.g. region from the Multiplay launch args,
+        /// hostname from <c>Environment.MachineName</c> / <c>Dns.GetHostName()</c>). Like the server id —
+        /// and unlike the match id — these persist across matches and are NOT cleared by
+        /// <see cref="EndMatch"/>. Both are clamped to the server contract (64 / 255 chars). They ride
+        /// every subsequent heartbeat and SEED the server's fleet record. NOTE: an empty/null value is
+        /// treated as "unset" server-side — it stops the SDK reporting that field but does NOT erase a
+        /// value already stored on the record (change a stored one via the dashboard). Role-agnostic,
+        /// but in practice only meaningful for a server actor.
+        /// </summary>
+        /// <param name="region">Cloud region / location label, e.g. "eu-west-1".</param>
+        /// <param name="hostname">Machine hostname, e.g. <c>Environment.MachineName</c>.</param>
+        public static void SetServerInfo(string region, string hostname)
+        {
+            try
+            {
+                _region = truncate(region, MAX_REGION) ?? "";
+                _hostname = truncate(hostname, MAX_HOSTNAME) ?? "";
+            }
+            catch (Exception e)
+            {
+                TombstackLog.Warn($"SetServerInfo failed: {e.Message}");
             }
         }
 

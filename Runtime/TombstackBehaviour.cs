@@ -357,8 +357,20 @@ namespace AnkleBreaker.Tombstack
                     role = Tombstack.CurrentRole,
                     serverId = Tombstack.CurrentServerId,
                     matchId = Tombstack.CurrentMatchId,
+                    // Server fleet metadata (SetServerInfo); "" when unset, cleaned to undefined server-side.
+                    region = Tombstack.CurrentRegion,
+                    hostname = Tombstack.CurrentHostname,
                 };
-                return JsonUtility.ToJson(hb);
+                var json = JsonUtility.ToJson(hb);
+                // JsonUtility can't serialize the per-user metadata Dictionary, so splice the pre-built
+                // "metadata":{...} object in before the closing brace. Change-detected: non-null only when
+                // the map changed since the last beat ("{}" when just cleared → the server deletes it).
+                var metaJson = Tombstack.ConsumeUserMetadataForHeartbeat();
+                if (metaJson != null && json.Length >= 2 && json[json.Length - 1] == '}')
+                {
+                    json = json.Substring(0, json.Length - 1) + ",\"metadata\":" + metaJson + "}";
+                }
+                return json;
             }
             catch (Exception e)
             {

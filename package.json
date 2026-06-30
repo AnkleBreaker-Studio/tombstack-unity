@@ -1,6 +1,6 @@
 {
   "name": "com.anklebreaker.tombstack",
-  "version": "0.9.5",
+  "version": "0.9.6",
   "displayName": "Tombstack",
   "description": "Crash, exception, and session telemetry reporting for Unity games — fully autonomous after Init. Captures managed C# exceptions (Unity log, unobserved Tasks, AppDomain), keeps a rolling session log uploaded with crashes and bug reports, detects unclean shutdowns (hard crash / OOM / force quit) on the next launch, and emits session heartbeats for CCU. Includes an in-editor hub: sign in with your Tombstack account, link the project to a game, and watch a live crash dashboard without leaving Unity. Free tier under 10 CCU.",
   "unity": "6000.0",

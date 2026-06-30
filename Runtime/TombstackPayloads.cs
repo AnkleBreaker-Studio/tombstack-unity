@@ -170,6 +170,12 @@ namespace AnkleBreaker.Tombstack
         public string serverId;
         /// <summary>Correlation: match id (SetMatchContext / StartMatch); "" when unset (server cleans to undefined).</summary>
         public string matchId;
+        /// <summary>Server region (e.g. "eu-west-1") set via <see cref="Tombstack.SetServerInfo"/> — feeds the
+        /// Fleet/Servers screen. "" when unset (server cleans to undefined, same convention as serverId).</summary>
+        public string region;
+        /// <summary>Server hostname (e.g. Environment.MachineName) set via <see cref="Tombstack.SetServerInfo"/>.
+        /// "" when unset (server cleans to undefined, same convention as serverId).</summary>
+        public string hostname;
     }
 
     // ── Ingest response DTOs (parse-only) ───────────────────────────────────────────────────
