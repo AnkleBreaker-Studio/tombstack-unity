@@ -26,6 +26,9 @@ namespace AnkleBreaker.Tombstack
         [Tooltip("Seconds between session heartbeats (used for CCU billing + crash rate).")]
         [SerializeField] private float _heartbeatIntervalSeconds = 60f;
 
+        [Tooltip("Deployment environment stamped on all telemetry (e.g. \"production\", \"development\"). Feeds the dashboard environment filter. Leave as \"production\" unless this build targets a non-prod environment.")]
+        [SerializeField] private string _environment = "production";
+
         [Tooltip("Automatically capture unhandled exceptions (Unity log, unobserved Tasks, AppDomain) as crash reports.")]
         [SerializeField] private bool _autoCaptureExceptions = true;
 
@@ -61,6 +64,7 @@ namespace AnkleBreaker.Tombstack
         public bool AutoInitOnLoad => _autoInitOnLoad;
         public bool RequireConsent => _requireConsent;
         public float HeartbeatIntervalSeconds => _heartbeatIntervalSeconds;
+        public string Environment => _environment;
         public bool AutoCaptureExceptions => _autoCaptureExceptions;
         public bool UploadLogs => _uploadLogs;
         public bool DetectUncleanShutdown => _detectUncleanShutdown;

@@ -2,6 +2,34 @@
 
 All notable changes to `com.anklebreaker.tombstack`.
 
+## [0.9.7] - 2026-07-01
+### Added — deployment environment (production / development / staging …)
+- **`Tombstack.SetEnvironment(string environment)`** and a new **`environment`** parameter on
+  **`Tombstack.Init(...)`** — label which deployment a build reports from. Stamped on **every** payload
+  (crashes, bug reports, events, metrics, and heartbeats) so the dashboard can filter each page by
+  environment. **Defaults to `"production"`** (Sentry-style) — you only set it when a build targets a
+  non-prod environment. `SetEnvironment` ignores a null/empty value (never silently blanks the label)
+  and the label is clamped to 64 chars to match the server contract.
+- Zero-code path: a new **`Environment`** field on `TombstackConfig` (Project Settings ▸ Tombstack) is
+  read by auto-init, so a build can pick its environment without any code.
+- Server-side: `environment` rides the correlation spine; rows with no environment (older SDKs) default
+  to `"production"` on read, so every row stays filterable. No data migration required.
+
+### Fixed — user-metadata delivery robustness
+- **Ack-gated metadata sync:** a heartbeat's user-metadata payload now advances the change-detection
+  baseline **only after the beat is acknowledged (2xx)**. Previously a dropped beat (heartbeats are
+  ephemeral, never retried) permanently "spent" a metadata change or clear — a removed `displayName`
+  could linger on the dashboard forever.
+- **Login re-propagation:** `SetUser` now resets the metadata baseline on **any** identity change,
+  including anonymous→id, while keeping the map — metadata set just before the first `SetUser(id)`
+  reliably reaches the server under the new identity (the server drops metadata on anonymous beats).
+  An epoch guard prevents a pre-login beat's late ack from clobbering the reset.
+- `SetUser` is now wrapped in the same fail-silent guard as every other public entry point.
+
+### Added — diagnostics
+- **`TombstackDiagnostics`** gains `Environment`, `Region`, `Hostname`, and `UserMetadataKeyCount`, so
+  support overlays can display the new dimensions.
+
 ## [0.9.6] - 2026-06-30
 ### Added — server region/hostname + per-user custom metadata
 - **`Tombstack.SetServerInfo(string region, string hostname)`** — tag a dedicated server's region and

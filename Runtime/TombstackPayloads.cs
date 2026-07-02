@@ -26,6 +26,8 @@ namespace AnkleBreaker.Tombstack
         public string stackHint;
         /// <summary>Full managed stack trace, max 8192 chars (server derives the canonical signature).</summary>
         public string stackTrace;
+        /// <summary>Deployment environment (Init / SetEnvironment; default "production"). "" → server defaults to production.</summary>
+        public string environment;
         /// <summary>Player id set via <see cref="Tombstack.SetUser"/> ("" when anonymous).</summary>
         public string userId;
         /// <summary>Steam64 id set via <see cref="Tombstack.SetUser"/> ("" when absent).</summary>
@@ -93,6 +95,8 @@ namespace AnkleBreaker.Tombstack
         public string category;
         /// <summary>Player-written report body, max 4000 chars.</summary>
         public string message;
+        /// <summary>Deployment environment (Init / SetEnvironment; default "production"). "" → server defaults to production.</summary>
+        public string environment;
         /// <summary>Player id set via <see cref="Tombstack.SetUser"/> ("" when anonymous).</summary>
         public string userId;
         /// <summary>Steam64 id set via <see cref="Tombstack.SetUser"/> ("" when absent).</summary>
@@ -176,6 +180,9 @@ namespace AnkleBreaker.Tombstack
         /// <summary>Server hostname (e.g. Environment.MachineName) set via <see cref="Tombstack.SetServerInfo"/>.
         /// "" when unset (server cleans to undefined, same convention as serverId).</summary>
         public string hostname;
+        /// <summary>Deployment environment (Init / SetEnvironment; default "production") — feeds the dashboard
+        /// environment filter. "" → server defaults to production.</summary>
+        public string environment;
     }
 
     // ── Ingest response DTOs (parse-only) ───────────────────────────────────────────────────

@@ -329,21 +329,30 @@ namespace AnkleBreaker.Tombstack
                 // Consent-gated like every other capture; resumes when SetConsent(true) is called.
                 if (Tombstack.CaptureAllowed)
                 {
-                    var json = buildHeartbeatJson();
+                    var json = buildHeartbeatJson(out var pendingMetadataJson, out var metadataEpoch);
                     if (json != null)
                     {
                         // Heartbeats are ephemeral — a missed beat is stale data, never retried.
-                        yield return send(PendingUpload.Post(
-                            HEARTBEATS_PATH, json, UploadDurability.Ephemeral, null, false, false));
+                        var beat = PendingUpload.Post(
+                            HEARTBEATS_PATH, json, UploadDurability.Ephemeral, null, false, false);
+                        // Only advance the metadata baseline once THIS beat is acked (M1) — a dropped beat
+                        // must leave the change/clear pending so the next beat re-sends it.
+                        beat.PendingUserMetadataJson = pendingMetadataJson;
+                        beat.PendingUserMetadataEpoch = metadataEpoch;
+                        yield return send(beat);
                     }
                 }
                 yield return wait;
             }
         }
 
-        /// <summary>Build the heartbeat body; userId attribution feeds the Sessions/Fleet screens.</summary>
-        private string buildHeartbeatJson()
+        /// <summary>Build the heartbeat body; userId attribution feeds the Sessions/Fleet screens. Any
+        /// pending user-metadata change is spliced in AND returned via the out-params so the caller can
+        /// commit the baseline only once the beat is acked (M1); both are null/0 when nothing changed.</summary>
+        private string buildHeartbeatJson(out string pendingMetadataJson, out long metadataEpoch)
         {
+            pendingMetadataJson = null;
+            metadataEpoch = 0;
             try
             {
                 var hb = new HeartbeatPayload
@@ -360,15 +369,18 @@ namespace AnkleBreaker.Tombstack
                     // Server fleet metadata (SetServerInfo); "" when unset, cleaned to undefined server-side.
                     region = Tombstack.CurrentRegion,
                     hostname = Tombstack.CurrentHostname,
+                    // Deployment environment (Init/SetEnvironment; default "production") — feeds the dashboard filter.
+                    environment = Tombstack.CurrentEnvironment,
                 };
                 var json = JsonUtility.ToJson(hb);
                 // JsonUtility can't serialize the per-user metadata Dictionary, so splice the pre-built
                 // "metadata":{...} object in before the closing brace. Change-detected: non-null only when
                 // the map changed since the last beat ("{}" when just cleared → the server deletes it).
-                var metaJson = Tombstack.ConsumeUserMetadataForHeartbeat();
+                var metaJson = Tombstack.PeekUserMetadataForHeartbeat(out metadataEpoch);
                 if (metaJson != null && json.Length >= 2 && json[json.Length - 1] == '}')
                 {
                     json = json.Substring(0, json.Length - 1) + ",\"metadata\":" + metaJson + "}";
+                    pendingMetadataJson = metaJson; // commit this exact value once the beat is acked (M1)
                 }
                 return json;
             }
@@ -493,7 +505,13 @@ namespace AnkleBreaker.Tombstack
                         scheduleScreenshotUpload(item, req.downloadHandler != null ? req.downloadHandler.text : null);
                     // Command channel: a heartbeat ack may carry pull requests targeting this client.
                     if (!item.IsLogPut && item.Path == HEARTBEATS_PATH)
+                    {
                         handleHeartbeatAck(req.downloadHandler != null ? req.downloadHandler.text : null);
+                        // The beat delivered — advance the metadata baseline now (M1). Epoch-guarded so a
+                        // pre-login beat's late ack can't clobber a SetUser baseline reset (M2).
+                        if (item.PendingUserMetadataJson != null)
+                            Tombstack.CommitUserMetadataForHeartbeat(item.PendingUserMetadataJson, item.PendingUserMetadataEpoch);
+                    }
                     return;
                 }
 
@@ -729,6 +747,11 @@ namespace AnkleBreaker.Tombstack
             // bytes. Mutable (set right after Post by the capture path); best-effort, never persisted.
             public bool RequestedScreenshot;
             public byte[] ScreenshotBytes;
+            // Heartbeat metadata delivery (M1): the metadata JSON this beat is carrying + the epoch it was
+            // built under. On a 2xx, the baseline is advanced to this value (epoch-guarded). Null when the
+            // beat carries no metadata change. Mutable, set right after Post; never persisted.
+            public string PendingUserMetadataJson;
+            public long PendingUserMetadataEpoch;
             public string FilePath; // non-null when the item is backed by a persisted file
             public int Attempt;     // in-session retry counter
 

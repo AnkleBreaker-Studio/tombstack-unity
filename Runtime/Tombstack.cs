@@ -40,11 +40,20 @@ namespace AnkleBreaker.Tombstack
         public readonly string MatchId;
         /// <summary>Current server id ("" when unset).</summary>
         public readonly string ServerId;
+        /// <summary>Deployment environment stamped on all telemetry ("production" by default).</summary>
+        public readonly string Environment;
+        /// <summary>Server-lifetime region label ("" when unset / not a dedicated server).</summary>
+        public readonly string Region;
+        /// <summary>Server-lifetime hostname label ("" when unset).</summary>
+        public readonly string Hostname;
+        /// <summary>Number of per-user metadata keys currently set (0 when none).</summary>
+        public readonly int UserMetadataKeyCount;
 
         /// <summary>Construct a diagnostics snapshot (called by <see cref="Tombstack.GetDiagnostics"/>).</summary>
         public TombstackDiagnostics(
             bool initialized, bool consentGranted, int queuedOutbound, int persistedSidecar,
-            double lastFlushAgeSeconds, string endpoint, string matchId, string serverId)
+            double lastFlushAgeSeconds, string endpoint, string matchId, string serverId,
+            string environment, string region, string hostname, int userMetadataKeyCount)
         {
             Initialized = initialized;
             ConsentGranted = consentGranted;
@@ -54,6 +63,10 @@ namespace AnkleBreaker.Tombstack
             Endpoint = endpoint;
             MatchId = matchId;
             ServerId = serverId;
+            Environment = environment;
+            Region = region;
+            Hostname = hostname;
+            UserMetadataKeyCount = userMetadataKeyCount;
         }
     }
 
@@ -95,6 +108,8 @@ namespace AnkleBreaker.Tombstack
         // Server metadata (region / hostname) clamp to the server contract maxima (64 / 255).
         private const int MAX_REGION = 64;
         private const int MAX_HOSTNAME = 255;
+        // Deployment environment label (e.g. "production" / "development"), clamped to the server contract (64).
+        private const int MAX_ENVIRONMENT = 64;
         private const int SIGNATURE_FRAMES = 8;
         private const int SIGNATURE_HEX_LENGTH = 32;
         private const int MAX_BREADCRUMBS = 50;
@@ -155,10 +170,15 @@ namespace AnkleBreaker.Tombstack
         // heartbeat. Keyed to _userId — cleared when SetUser changes the player. Locked: read off-thread.
         private static readonly Dictionary<string, string> _userMetadata = new Dictionary<string, string>(StringComparer.Ordinal);
         private static readonly object _userMetadataLock = new object();
-        // The metadata JSON last SENT on a heartbeat ("{}" = none). Change-detection: a beat carries the
+        // The metadata JSON last ACKED on a heartbeat ("{}" = none). Change-detection: a beat carries the
         // "metadata" field only when the current map differs from this — so a steady map costs no repeat
         // server writes, and clearing to empty sends "{}" once so the server deletes the stored record.
+        // Advanced ONLY on a heartbeat 2xx (M1): a dropped ephemeral beat must not "spend" a change/clear.
         private static string _lastSentUserMetadataJson = "{}";
+        // Bumped whenever SetUser resets the baseline on an identity change (M2). A pending commit from a
+        // heartbeat built before that reset is voided when its captured epoch no longer matches, so a late
+        // ack from a pre-login (anonymous) beat can't clobber the new identity's baseline. Locked.
+        private static long _userMetadataEpoch;
         // Correlation context: stamped on every payload so server<->session<->match<->player
         // linking is exact. Defaults make a plain client send role="client" + empty ids ("" is
         // cleaned to undefined server-side, like userId). Set via SetMatchContext/StartMatch.
@@ -170,6 +190,9 @@ namespace AnkleBreaker.Tombstack
         // its region/hostname for its whole lifetime. "" when unset (cleaned to undefined server-side).
         private static string _region = "";
         private static string _hostname = "";
+        // Deployment environment stamped on ALL telemetry (crashes, events, metrics, heartbeats, bug reports).
+        // Defaults to "production"; set at Init or via SetEnvironment. Empty is treated as "production" server-side.
+        private static string _environment = "production";
 
         // Dirty-session state captured at Init, consumed when capture first becomes allowed.
         private static SessionMarkerData _previousMarker;
@@ -238,14 +261,28 @@ namespace AnkleBreaker.Tombstack
         /// (the server deletes the stored record on an empty object). JsonUtility can't serialize a
         /// Dictionary, so the map is hand-serialized (keys/values escaped via TombstackJson). Thread-safe.
         /// </summary>
-        internal static string ConsumeUserMetadataForHeartbeat()
+        internal static string PeekUserMetadataForHeartbeat(out long epoch)
         {
             lock (_userMetadataLock)
             {
+                epoch = _userMetadataEpoch;
                 var current = buildUserMetadataJsonLocked();
                 if (string.Equals(current, _lastSentUserMetadataJson, StringComparison.Ordinal)) return null; // unchanged → omit
-                _lastSentUserMetadataJson = current;
-                return current; // changed (incl. "{}" for a clear) → send
+                return current; // changed (incl. "{}" for a clear) → splice; commit on the beat's 2xx (M1)
+            }
+        }
+
+        /// <summary>Advance the last-ACKED metadata baseline to what a heartbeat actually delivered — called
+        /// only from the 2xx path (M1). Voided when <paramref name="epoch"/> no longer matches: SetUser reset
+        /// the baseline after this beat was built, so a pre-login beat must not clobber the new identity's
+        /// baseline (M2). Thread-safe.</summary>
+        internal static void CommitUserMetadataForHeartbeat(string sentJson, long epoch)
+        {
+            if (sentJson == null) return;
+            lock (_userMetadataLock)
+            {
+                if (epoch != _userMetadataEpoch) return; // identity changed since build → stale, drop
+                _lastSentUserMetadataJson = sentJson;
             }
         }
 
@@ -283,6 +320,9 @@ namespace AnkleBreaker.Tombstack
         /// <summary>Current server hostname ("" when unset) for heartbeat fleet metadata.</summary>
         internal static string CurrentHostname => _hostname;
 
+        /// <summary>Current deployment environment (default "production") stamped on all telemetry.</summary>
+        internal static string CurrentEnvironment => _environment;
+
         /// <summary>Auto-init from a <c>Resources/TombstackConfig</c> asset, if present and enabled.</summary>
         [RuntimeInitializeOnLoadMethod(RuntimeInitializeLoadType.BeforeSceneLoad)]
         private static void autoInit()
@@ -303,7 +343,7 @@ namespace AnkleBreaker.Tombstack
                 _autoRttMetric = config.AutoRttMetric;
                 _autoSceneBreadcrumbs = config.AutoSceneBreadcrumbs;
                 _sendExceptionsInEditor = config.SendExceptionsInEditor; // read before Init so the hook-registration gate sees it
-                Init(config.GameToken, config.Endpoint, config.HeartbeatIntervalSeconds);
+                Init(config.GameToken, config.Endpoint, config.HeartbeatIntervalSeconds, config.Environment);
             }
             catch (Exception e)
             {
@@ -318,7 +358,7 @@ namespace AnkleBreaker.Tombstack
         /// <param name="gameToken">Per-game SDK token (tmb_...). Treat as a build secret.</param>
         /// <param name="endpoint">Tombstack base URL, e.g. https://your-tenant.example.com</param>
         /// <param name="heartbeatIntervalSeconds">Seconds between session heartbeats (clamped to a sane range).</param>
-        public static void Init(string gameToken, string endpoint, float heartbeatIntervalSeconds = 60f)
+        public static void Init(string gameToken, string endpoint, float heartbeatIntervalSeconds = 60f, string environment = null)
         {
             try
             {
@@ -330,6 +370,8 @@ namespace AnkleBreaker.Tombstack
                 }
                 _gameToken = gameToken;
                 _endpoint = endpoint.TrimEnd('/');
+                // Environment: explicit value wins; otherwise keep the "production" default. Clamped to the contract.
+                if (!string.IsNullOrEmpty(environment)) _environment = truncate(environment, MAX_ENVIRONMENT);
                 _buildVersion = TombstackPlatform.BuildVersion();
                 _os = TombstackPlatform.Os();
                 _arch = TombstackPlatform.Arch();
@@ -379,16 +421,31 @@ namespace AnkleBreaker.Tombstack
         /// <param name="steamId">Optional Steam64 id (e.g. "7656119...").</param>
         public static void SetUser(string userId, string steamId = null)
         {
-            var next = truncate(userId, MAX_USER_ID);
-            // Metadata belongs to the player — drop it when SWITCHING away from a set user (idA→idB, or
-            // id→null logout), so one player's displayName/attrs never bleed onto the next. NOT on the
-            // initial null→id call, so metadata set just before the first SetUser(id) survives.
-            if (!string.IsNullOrEmpty(_userId) && !string.Equals(next, _userId, StringComparison.Ordinal))
+            try
             {
-                lock (_userMetadataLock) { _userMetadata.Clear(); _lastSentUserMetadataJson = "{}"; }
+                var next = truncate(userId, MAX_USER_ID);
+                // On ANY identity change: reset the last-ACKED baseline to "{}" so the map re-propagates
+                // under the new id. A switch away (idA→idB / id→null logout) also DROPS the map so one
+                // player's displayName/attrs never bleed onto the next; an anonymous→id login KEEPS the map
+                // (metadata set just before the first SetUser(id) must survive) — but the server drops
+                // metadata on an anonymous beat, so the baseline reset is what forces it to re-send under the
+                // now-valid id (M2). Bump the epoch so a late ack from a pre-login beat can't undo this reset.
+                if (!string.Equals(next, _userId, StringComparison.Ordinal))
+                {
+                    lock (_userMetadataLock)
+                    {
+                        if (!string.IsNullOrEmpty(_userId)) _userMetadata.Clear();
+                        _lastSentUserMetadataJson = "{}";
+                        _userMetadataEpoch++;
+                    }
+                }
+                _userId = next;
+                _steamId = truncate(steamId, MAX_STEAM_ID);
             }
-            _userId = next;
-            _steamId = truncate(steamId, MAX_STEAM_ID);
+            catch (Exception e)
+            {
+                TombstackLog.Warn($"SetUser failed: {e.Message}");
+            }
         }
 
         /// <summary>
@@ -473,6 +530,27 @@ namespace AnkleBreaker.Tombstack
             catch (Exception e)
             {
                 TombstackLog.Warn($"SetServerInfo failed: {e.Message}");
+            }
+        }
+
+        /// <summary>
+        /// Set the deployment environment label (e.g. "production", "development", "staging") stamped
+        /// on ALL subsequent telemetry — crashes, events, metrics, heartbeats, bug reports. This is what
+        /// the dashboard environment filter groups on. Defaults to "production" (also settable at
+        /// <see cref="Init"/>). A null/empty value is ignored (keeps the current environment) so a bad
+        /// call can never silently blank the label. Clamped to 64 chars to match the server contract.
+        /// </summary>
+        /// <param name="environment">Environment name, e.g. "production" or "development".</param>
+        public static void SetEnvironment(string environment)
+        {
+            try
+            {
+                var cleaned = truncate(environment, MAX_ENVIRONMENT);
+                if (!string.IsNullOrEmpty(cleaned)) _environment = cleaned;
+            }
+            catch (Exception e)
+            {
+                TombstackLog.Warn($"SetEnvironment failed: {e.Message}");
             }
         }
 
@@ -672,6 +750,7 @@ namespace AnkleBreaker.Tombstack
                     serverId = _serverId,
                     matchId = _matchId,
                     sessionId = _sessionId,
+                    environment = _environment,
                     device = _device,
                 };
                 if (_captureScreenshotOnBugReport && TombstackBehaviour.HasInstance)
@@ -802,6 +881,7 @@ namespace AnkleBreaker.Tombstack
             if (!string.IsNullOrEmpty(_matchId)) TombstackJson.AppendField(sb, "matchId", _matchId, ref first);
             if (!string.IsNullOrEmpty(_userId)) TombstackJson.AppendField(sb, "userId", _userId, ref first);
             if (!string.IsNullOrEmpty(_sessionId)) TombstackJson.AppendField(sb, "sessionId", _sessionId, ref first);
+            if (!string.IsNullOrEmpty(_environment)) TombstackJson.AppendField(sb, "environment", _environment, ref first);
         }
 
         /// <summary>
@@ -878,6 +958,8 @@ namespace AnkleBreaker.Tombstack
         {
             try
             {
+                int userMetadataKeyCount;
+                lock (_userMetadataLock) { userMetadataKeyCount = _userMetadata.Count; }
                 return new TombstackDiagnostics(
                     _initialized,
                     _consent,
@@ -886,7 +968,11 @@ namespace AnkleBreaker.Tombstack
                     TombstackBehaviour.LastFlushAgeSeconds,
                     TombstackBehaviour.Endpoint,
                     _matchId ?? string.Empty,
-                    _serverId ?? string.Empty);
+                    _serverId ?? string.Empty,
+                    _environment ?? string.Empty,
+                    _region ?? string.Empty,
+                    _hostname ?? string.Empty,
+                    userMetadataKeyCount);
             }
             catch (Exception e)
             {
@@ -1007,6 +1093,7 @@ namespace AnkleBreaker.Tombstack
                 serverId = _serverId,
                 matchId = _matchId,
                 sessionId = _sessionId,
+                environment = _environment,
                 device = _device,
             };
             // Opt-in exception screenshot: synchronous best-effort grab (main-thread only, throttled).
@@ -1223,6 +1310,7 @@ namespace AnkleBreaker.Tombstack
                 serverId = _serverId,
                 matchId = _matchId,
                 sessionId = previous.sessionId,
+                environment = _environment, // same deployment; captured this launch (dead session's wasn't persisted)
                 device = _device, // same physical device; captured this launch (dead session's wasn't persisted)
             };
             TombstackBehaviour.Enqueue(

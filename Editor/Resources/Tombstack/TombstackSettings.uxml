@@ -37,6 +37,8 @@
             <uie:FloatField name="set-heartbeat" label="HEARTBEAT (S)" />
             <ui:Toggle name="set-consent" label="REQUIRE CONSENT" />
             <ui:Toggle name="set-send-exceptions-editor" label="SEND EXCEPTIONS IN EDITOR" />
+            <ui:TextField name="set-environment" label="ENVIRONMENT" />
+            <ui:Label text="Deployment label this build reports under (production / staging / development / …). The dashboard filters every page by it. Defaults to production; press Enter to apply." class="tmb-dim" style="margin-top: 4px;" />
             <ui:Label text="When off, automatically-caught exceptions are not reported while you play in the Editor. Manual Tombstack.ReportException and shipped builds are unaffected." class="tmb-dim" style="margin-top: 4px;" />
         </ui:VisualElement>
     </ui:VisualElement>

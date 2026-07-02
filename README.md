@@ -38,16 +38,16 @@ All three autonomy systems can be toggled on the config asset (`Auto Capture Exc
 
 ## Install
 
-**Via UPM git URL** — Window ▸ Package Manager ▸ `+` ▸ *Add package from git URL…*:
+**Via UPM git URL** (public mirror) — Window ▸ Package Manager ▸ `+` ▸ *Add package from git URL…*:
 
 ```
-https://github.com/AnkleBreaker-Studio/tombstack.git?path=unity
+https://github.com/AnkleBreaker-Studio/tombstack-unity.git#v0.9.7
 ```
 
 Or add to `Packages/manifest.json`:
 
 ```jsonc
-{ "dependencies": { "com.anklebreaker.tombstack": "https://github.com/AnkleBreaker-Studio/tombstack.git?path=unity" } }
+{ "dependencies": { "com.anklebreaker.tombstack": "https://github.com/AnkleBreaker-Studio/tombstack-unity.git#v0.9.7" } }
 ```
 
 Or copy `unity/` into your project's `Packages/`. Requires Unity **6 (6000.0)+** (Mono and IL2CPP).
@@ -179,7 +179,7 @@ try { Load(); } catch (Exception e) { Tombstack.ReportException(e); }
 
 ## Public API
 ```csharp
-Tombstack.Init(gameToken, endpoint, heartbeatIntervalSeconds = 60f);
+Tombstack.Init(gameToken, endpoint, heartbeatIntervalSeconds = 60f, environment = null);
 Tombstack.SetUser(userId, steamId = null);
 Tombstack.SetConsent(bool granted);
 Tombstack.TrackEvent(name, Dictionary<string,string> props = null);
@@ -189,13 +189,24 @@ Tombstack.AddBreadcrumb(message, BreadcrumbLevel level = Info, category = null);
 Tombstack.ReportException(exception);
 Tombstack.ReportBug(message, category = null);
 
+// Deployment environment (production / staging / development / …) — stamped on EVERY payload;
+// the dashboard filters every page by it. Defaults to "production"; also settable zero-code via
+// the TombstackConfig asset (Project Settings ▸ Tombstack ▸ Environment).
+Tombstack.SetEnvironment(environment);
+
+// Per-player custom metadata — merges keys ("displayName" becomes the player's dashboard label);
+// null/empty value removes a key. Rides heartbeats; ack-gated so a dropped beat never loses a change.
+Tombstack.SetUserMetadata(Dictionary<string,string> metadata);
+
 // Diagnostics snapshot (support overlays / dev HUDs) — readonly struct, no steady-state alloc
 TombstackDiagnostics diag = Tombstack.GetDiagnostics();
 // diag.Initialized / ConsentGranted / QueuedOutbound / PersistedSidecar /
-// diag.LastFlushAgeSeconds / Endpoint / MatchId / ServerId
+// diag.LastFlushAgeSeconds / Endpoint / MatchId / ServerId /
+// diag.Environment / Region / Hostname / UserMetadataKeyCount
 
 // Multiplayer correlation context (dedicated servers)
 Tombstack.SetMatchContext(serverId, matchId);
+Tombstack.SetServerInfo(region, hostname);  // fleet labels; server-lifetime, survives EndMatch
 string matchId = Tombstack.StartMatch();   // server: flips role to "server", mints a match id
 Tombstack.EndMatch();
 

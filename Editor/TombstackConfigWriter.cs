@@ -20,6 +20,7 @@ namespace AnkleBreaker.Tombstack.Editor
         private const string PROP_HEARTBEAT = "_heartbeatIntervalSeconds";
         private const string PROP_REQUIRE_CONSENT = "_requireConsent";
         private const string PROP_SEND_EXCEPTIONS_IN_EDITOR = "_sendExceptionsInEditor";
+        private const string PROP_ENVIRONMENT = "_environment";
         private const string TOKEN_PREFIX = "tmb_";
         private const string TOKEN_PLACEHOLDER = "tmb_REPLACE_ME";
 
@@ -103,6 +104,19 @@ namespace AnkleBreaker.Tombstack.Editor
         public static void WriteSendExceptionsInEditor(bool send)
         {
             writeProperty(so => so.FindProperty(PROP_SEND_EXCEPTIONS_IN_EDITOR).boolValue = send);
+        }
+
+        /// <summary>
+        /// Update the deployment environment label on the config asset (no-op when absent). Empty or
+        /// whitespace falls back to "production" — the label must never be silently blank, mirroring
+        /// the runtime's <c>SetEnvironment</c> contract. Clamped to the server's 64-char limit.
+        /// </summary>
+        /// <param name="environment">Deployment label this build reports under (production / staging / …).</param>
+        public static void WriteEnvironment(string environment)
+        {
+            var value = string.IsNullOrWhiteSpace(environment) ? "production" : environment.Trim();
+            if (value.Length > 64) value = value.Substring(0, 64);
+            writeProperty(so => so.FindProperty(PROP_ENVIRONMENT).stringValue = value);
         }
 
         /// <summary>Clear the SDK token from the config asset (unlink), keeping the asset.</summary>

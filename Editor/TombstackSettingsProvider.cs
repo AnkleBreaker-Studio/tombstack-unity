@@ -22,6 +22,7 @@ namespace AnkleBreaker.Tombstack.Editor
         private static FloatField _heartbeatField;
         private static Toggle _consentToggle;
         private static Toggle _sendExceptionsEditorToggle;
+        private static TextField _environmentField;
         private static Button _signOutButton;
         private static Button _unlinkButton;
         private static Button _openHubButton;
@@ -51,6 +52,10 @@ namespace AnkleBreaker.Tombstack.Editor
             _heartbeatField = rootElement.Q<FloatField>("set-heartbeat");
             _consentToggle = rootElement.Q<Toggle>("set-consent");
             _sendExceptionsEditorToggle = rootElement.Q<Toggle>("set-send-exceptions-editor");
+            _environmentField = rootElement.Q<TextField>("set-environment");
+            // Commit on Enter/blur, not per keystroke — the writer normalizes (empty → "production"),
+            // which would fight the user mid-typing otherwise.
+            if (_environmentField != null) _environmentField.isDelayed = true;
             _signOutButton = rootElement.Q<Button>("set-signout");
             _unlinkButton = rootElement.Q<Button>("set-unlink");
             _openHubButton = rootElement.Q<Button>("set-open-hub");
@@ -62,6 +67,7 @@ namespace AnkleBreaker.Tombstack.Editor
             _heartbeatField?.RegisterValueChangedCallback(onHeartbeatChanged);
             _consentToggle?.RegisterValueChangedCallback(onConsentChanged);
             _sendExceptionsEditorToggle?.RegisterValueChangedCallback(onSendExceptionsEditorChanged);
+            _environmentField?.RegisterValueChangedCallback(onEnvironmentChanged);
             _signOutButton?.RegisterCallback<ClickEvent>(onSignOutClicked);
             _unlinkButton?.RegisterCallback<ClickEvent>(onUnlinkClicked);
             _openHubButton?.RegisterCallback<ClickEvent>(onOpenHubClicked);
@@ -77,6 +83,7 @@ namespace AnkleBreaker.Tombstack.Editor
             _heartbeatField?.UnregisterValueChangedCallback(onHeartbeatChanged);
             _consentToggle?.UnregisterValueChangedCallback(onConsentChanged);
             _sendExceptionsEditorToggle?.UnregisterValueChangedCallback(onSendExceptionsEditorChanged);
+            _environmentField?.UnregisterValueChangedCallback(onEnvironmentChanged);
             _signOutButton?.UnregisterCallback<ClickEvent>(onSignOutClicked);
             _unlinkButton?.UnregisterCallback<ClickEvent>(onUnlinkClicked);
             _openHubButton?.UnregisterCallback<ClickEvent>(onOpenHubClicked);
@@ -85,6 +92,7 @@ namespace AnkleBreaker.Tombstack.Editor
             _heartbeatField = null;
             _consentToggle = null;
             _sendExceptionsEditorToggle = null;
+            _environmentField = null;
             _signOutButton = null;
             _unlinkButton = null;
             _openHubButton = null;
@@ -111,11 +119,13 @@ namespace AnkleBreaker.Tombstack.Editor
             _heartbeatField?.SetEnabled(hasConfig);
             _consentToggle?.SetEnabled(hasConfig);
             _sendExceptionsEditorToggle?.SetEnabled(hasConfig);
+            _environmentField?.SetEnabled(hasConfig);
             if (hasConfig)
             {
                 _heartbeatField?.SetValueWithoutNotify(config.HeartbeatIntervalSeconds);
                 _consentToggle?.SetValueWithoutNotify(config.RequireConsent);
                 _sendExceptionsEditorToggle?.SetValueWithoutNotify(config.SendExceptionsInEditor);
+                _environmentField?.SetValueWithoutNotify(config.Environment);
                 showStatus(null);
             }
             else
@@ -138,6 +148,13 @@ namespace AnkleBreaker.Tombstack.Editor
 
         private static void onSendExceptionsEditorChanged(ChangeEvent<bool> evt)
             => TombstackConfigWriter.WriteSendExceptionsInEditor(evt.newValue);
+
+        private static void onEnvironmentChanged(ChangeEvent<string> evt)
+        {
+            TombstackConfigWriter.WriteEnvironment(evt.newValue);
+            // Reflect the normalized value (trim/clamp/empty→"production") back into the field.
+            refreshValues();
+        }
 
         private static async void onSignOutClicked(ClickEvent evt)
         {
