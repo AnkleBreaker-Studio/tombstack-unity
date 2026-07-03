@@ -168,6 +168,9 @@ namespace AnkleBreaker.Tombstack
         // v0.9 autonomy toggles — default ON; overridden from TombstackConfigSO at auto-init.
         private static bool _autoRttMetric = true;        // §K1: auto tombstack.rtt_ms after each ingest POST
         private static bool _autoSceneBreadcrumbs = true; // §K2: auto breadcrumb on scene load / active change
+        // v0.11 app-hang watchdog — default ON, 5s; overridden from TombstackConfigSO at auto-init.
+        private static bool _detectAppHangs = true;
+        private static float _appHangThresholdSeconds = 5f;
         private static string _endpoint;
         private static string _gameToken;
         private static string _sessionId;
@@ -282,6 +285,11 @@ namespace AnkleBreaker.Tombstack
         /// <summary>§K1: whether the auto round-trip metric (tombstack.rtt_ms) is enabled (read by the upload host).</summary>
         internal static bool AutoRttMetricEnabled => _autoRttMetric;
 
+        /// <summary>Effective app-hang watchdog threshold in seconds — 0 when detection is disabled
+        /// (DetectAppHangs off, or a non-positive threshold). Read by TombstackBehaviour.Bootstrap;
+        /// the watchdog clamps positive values to its 2s minimum.</summary>
+        internal static float AppHangThresholdSeconds => _detectAppHangs ? _appHangThresholdSeconds : 0f;
+
         /// <summary>Current user id ("" or null when anonymous) for heartbeat attribution.</summary>
         internal static string CurrentUserId => _userId;
 
@@ -373,6 +381,8 @@ namespace AnkleBreaker.Tombstack
                 _exceptionScreenshotThrottleSeconds = config.ExceptionScreenshotThrottleSeconds;
                 _autoRttMetric = config.AutoRttMetric;
                 _autoSceneBreadcrumbs = config.AutoSceneBreadcrumbs;
+                _detectAppHangs = config.DetectAppHangs;
+                _appHangThresholdSeconds = config.AppHangThresholdSeconds;
                 _sendExceptionsInEditor = config.SendExceptionsInEditor; // read before Init so the hook-registration gate sees it
                 Init(config.GameToken, config.Endpoint, config.HeartbeatIntervalSeconds, config.Environment);
             }

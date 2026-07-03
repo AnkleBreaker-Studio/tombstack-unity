@@ -21,6 +21,8 @@ cases with **zero further integration**:
 | Screenshot attachment | ✅ Automatic (bug reports; opt-in on exceptions) | End-of-frame capture, downscaled (config cap, default 1280 px), uploaded via the presigned `screenshotUpload` after the report's 2xx — ON by default for bug reports; exception screenshots are opt-in + throttled |
 | Unclean shutdown (hard crash / OOM kill / force quit) | ✅ Automatic (next launch) | `session.lock` marker + preserved `previous-session.log`, reported as signature `unclean-shutdown` |
 | Session heartbeats / CCU | ✅ Automatic | Every N seconds (default 60) |
+| Per-session frame stats (0.11+) | ✅ Automatic | Each heartbeat carries the interval's `fpsAvg` / `slowFramePct` (> 33.4 ms) / `hitchCount` (> 250 ms) / `worstFrameMs` — sampled allocation-free, omitted when no frame ran (headless servers) |
+| App-hang detection (0.11+) | ✅ Automatic | Background watchdog; a main-thread stall > threshold (default 5s) reports one `tmb.app_hang` event (duration, scene, threshold) **on recovery** + a Warning breadcrumb — ≤1/min; no cross-thread stack (hangs group by scene) |
 | Offline durability + retry | ✅ Automatic | Write-ahead queue, exponential backoff, next-launch retry |
 | Event + metric batching (§16) | ✅ Automatic | `TrackEvent`/`TrackMetric` accumulate in a bounded, preallocated, drop-oldest buffer (cap 256) and flush as one batch on count ≥ 50 / age ≥ 10s / near-full / pause / quit / pre-crash |
 | Player identification | One-liner | `Tombstack.SetUser("user-123", steamId)` |
@@ -32,9 +34,10 @@ cases with **zero further integration**:
 | Server-triggered log pull — client honouring | ✅ Automatic | The heartbeat ack carries pull requests; a **consenting**, **targeted** client uploads its rolling session log via the existing presigned-log path, off-thread. A non-consenting client never uploads. |
 | Server-side log pull (request a player's logs) | One-liner | `Tombstack.RequestPlayerLogs(...)` / `Tombstack.OnAnomalousDisconnect(userId, reason)` (write-scoped server token) |
 
-All three autonomy systems can be toggled on the config asset (`Auto Capture Exceptions`,
-`Upload Logs`, `Detect Unclean Shutdown` — default ON) and are consent-gated: with
-*Require Consent* enabled, nothing is captured, mirrored, or reported until
+The autonomy systems can be toggled on the config asset (`Auto Capture Exceptions`,
+`Upload Logs`, `Detect Unclean Shutdown`, and 0.11's `Detect App Hangs` +
+`App Hang Threshold Seconds` — default ON / 5s, min 2s, 0 disables) and are consent-gated:
+with *Require Consent* enabled, nothing is captured, mirrored, or reported until
 `Tombstack.SetConsent(true)`.
 
 ## Install
@@ -42,13 +45,13 @@ All three autonomy systems can be toggled on the config asset (`Auto Capture Exc
 **Via UPM git URL** (public mirror) — Window ▸ Package Manager ▸ `+` ▸ *Add package from git URL…*:
 
 ```
-https://github.com/AnkleBreaker-Studio/tombstack-unity.git#v0.10.0
+https://github.com/AnkleBreaker-Studio/tombstack-unity.git#v0.11.0
 ```
 
 Or add to `Packages/manifest.json`:
 
 ```jsonc
-{ "dependencies": { "com.anklebreaker.tombstack": "https://github.com/AnkleBreaker-Studio/tombstack-unity.git#v0.10.0" } }
+{ "dependencies": { "com.anklebreaker.tombstack": "https://github.com/AnkleBreaker-Studio/tombstack-unity.git#v0.11.0" } }
 ```
 
 Or copy `unity/` into your project's `Packages/`. Requires Unity **6 (6000.0)+** (Mono and IL2CPP).

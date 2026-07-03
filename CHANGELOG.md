@@ -2,6 +2,34 @@
 
 All notable changes to `com.anklebreaker.tombstack`.
 
+## [0.11.0] - 2026-07-03
+### Added — per-session frame stats on heartbeats
+Every heartbeat now carries the frame statistics of the interval since the previous beat,
+sampled allocation-free from `Update` with `Time.unscaledDeltaTime`:
+- `fpsAvg` (1 decimal), `slowFramePct` (% of frames > 33.4 ms, 1 decimal),
+  `hitchCount` (frames > 250 ms), `worstFrameMs`.
+- The fields are **optional on the wire**: they are spliced onto the JsonUtility heartbeat
+  (like the user-metadata object) only when at least one frame was sampled in the interval —
+  older servers ignore them, headless/dedicated servers and the first beat of a session omit
+  them. The accumulator resets on every heartbeat send.
+- The dashboard's Fleet page shows the window's average FPS + total hitches when present.
+
+### Added — app-hang detection
+A background watchdog thread (`IsBackground`, 500 ms poll) watches a per-frame pulse from the
+main thread. When the main thread stalls longer than the threshold while the app is foreground
+(pause/backgrounding is respected and never counts), the SDK reports **once, on recovery**:
+- `TrackEvent("tmb.app_hang", { duration_ms, scene, threshold_ms })` — reported from the main
+  thread when it resumes, so the active scene name is captured safely. **No cross-thread stack
+  is captured** (not feasible in managed Unity) — hang events group by scene.
+- Plus a Warning breadcrumb (`app hang 5210ms`) for the trail on subsequent crashes/bugs.
+- Cooldown: max one hang report per 60 s. The watchdog is stopped and joined on quit and
+  never throws (whole thread body fail-silent).
+
+### Config (`TombstackConfigSO`)
+- `DetectAppHangs` (bool, default **ON**).
+- `AppHangThresholdSeconds` (float, default **5**; minimum 2 — smaller positive values clamp
+  up; **0 disables** detection).
+
 ## [0.10.0] - 2026-07-03
 ### Added — standard event taxonomy (`tmb.*`)
 Four typed helpers on the `Tombstack` facade. They are **plain custom events underneath** —

@@ -121,6 +121,9 @@ namespace AnkleBreaker.Tombstack
             _queueDir = Path.Combine(Application.persistentDataPath, QUEUE_DIR_NAME);
             _instance.loadPersistedQueue();
             _instance.StartCoroutine(_instance.heartbeatLoop());
+            // App-hang watchdog (0.11): background thread watching the Update pulse. ≤0 (config
+            // DetectAppHangs off, or a 0 threshold) means disabled — Start no-ops. Fail-silent.
+            TombstackAppHang.Start(Tombstack.AppHangThresholdSeconds);
         }
 
         /// <summary>
@@ -242,6 +245,10 @@ namespace AnkleBreaker.Tombstack
         {
             try
             {
+                // 0.11 per-frame pumps, both allocation-free: frame-stats accumulation (drained by
+                // the next heartbeat) and the app-hang pulse (watched by the background watchdog).
+                TombstackFrameStats.Sample(Time.unscaledDeltaTime);
+                TombstackAppHang.Pump();
                 while (_inFlight < MAX_CONCURRENT_UPLOADS && _outbound.TryDequeue(out var item))
                 {
                     StartCoroutine(send(item));
@@ -278,6 +285,8 @@ namespace AnkleBreaker.Tombstack
                 // backgrounded flag must be on disk before the slow flush — otherwise a kill mid-flush
                 // leaves backgrounded=false and the next launch reports a phantom crash.
                 Tombstack.notifyAppPause(paused);
+                // A backgrounded app legitimately stops pumping frames — never an app hang.
+                TombstackAppHang.NotifyPause(paused);
                 if (paused)
                 {
                     FlushBatches();
@@ -288,10 +297,13 @@ namespace AnkleBreaker.Tombstack
         }
 
         // Unity message — final flush on quit (complements Tombstack.onQuitting's log flush).
+        // Also stops + joins the app-hang watchdog (bounded join; the thread is IsBackground
+        // anyway, so a missed join can never keep the process alive).
         private void OnApplicationQuit()
         {
             try { FlushBatches(); }
             catch (System.Exception e) { TombstackLog.Warn("flush failed: " + e.Message); }
+            TombstackAppHang.Stop();
         }
 
         private void loadPersistedQueue()
@@ -381,6 +393,15 @@ namespace AnkleBreaker.Tombstack
                 {
                     json = json.Substring(0, json.Length - 1) + ",\"metadata\":" + metaJson + "}";
                     pendingMetadataJson = metaJson; // commit this exact value once the beat is acked (M1)
+                }
+                // Frame stats (0.11): OPTIONAL numeric fields, spliced like the metadata object —
+                // JsonUtility serializes every declared field, so absent-when-unsampled must bypass
+                // it. Null when no frame was sampled this interval (fields omitted entirely);
+                // draining here also resets the accumulator for the next heartbeat interval.
+                var frameJson = TombstackFrameStats.ConsumeJson();
+                if (frameJson != null && json.Length >= 2 && json[json.Length - 1] == '}')
+                {
+                    json = json.Substring(0, json.Length - 1) + "," + frameJson + "}";
                 }
                 return json;
             }

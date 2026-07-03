@@ -10,11 +10,11 @@ your Tombstack account. Requires **Unity 6 (6000.0)** or newer.
 
 ### 1. Install
 
-- **Tarball (recommended):** download `com.anklebreaker.tombstack-0.10.0.tgz` from
-  `https://tombstack.com/downloads/com.anklebreaker.tombstack-0.10.0.tgz`, then
+- **Tarball (recommended):** download `com.anklebreaker.tombstack-0.11.0.tgz` from
+  `https://tombstack.com/downloads/com.anklebreaker.tombstack-0.11.0.tgz`, then
   Package Manager ▸ `+` ▸ *Add package from tarball…*
 - Or Package Manager ▸ `+` ▸ *Add package from git URL…* →
-  `https://github.com/AnkleBreaker-Studio/tombstack-unity.git#v0.10.0`
+  `https://github.com/AnkleBreaker-Studio/tombstack-unity.git#v0.11.0`
 
 ### 2. Sign in (mandatory)
 
@@ -72,12 +72,21 @@ Once initialized, the SDK needs no further integration for the common cases:
   quit), the next launch detects it via the `session.lock` marker, reports a synthetic crash
   (signature `unclean-shutdown`), and uploads the preserved `previous-session.log`.
 - **Breadcrumbs, heartbeats, offline retry** — as before, all automatic.
+- **Per-session frame stats (0.11+)** — every heartbeat carries the interval's average FPS,
+  slow-frame % (> 33.4 ms), hitch count (> 250 ms), and worst frame ms; omitted when no frame
+  ran (headless servers), sampled with zero per-frame allocation.
+- **App-hang detection (0.11+)** — a background watchdog reports a `tmb.app_hang` event
+  (duration, active scene, threshold) when the main thread stalls longer than
+  *App Hang Threshold Seconds* (default 5, min 2; 0 disables) and then recovers, plus a
+  Warning breadcrumb. Max one report per minute; no cross-thread stack is captured — hang
+  events group by scene. Toggle via *Detect App Hangs* on the config asset.
 
 Manual one-liners: `SetUser`, `TrackEvent`, `ReportBug` (now attaches the session log),
 `AddBreadcrumb`, `ReportException`.
 
-Three toggles on the `TombstackConfig` asset control the autonomy systems (all default ON):
-*Auto Capture Exceptions*, *Upload Logs*, *Detect Unclean Shutdown*. All are consent-gated —
+Toggles on the `TombstackConfig` asset control the autonomy systems (all default ON):
+*Auto Capture Exceptions*, *Upload Logs*, *Detect Unclean Shutdown*, *Detect App Hangs*
+(with *App Hang Threshold Seconds*, default 5). All are consent-gated —
 with *Require consent* enabled, nothing is captured, mirrored, or reported until your game
 calls `Tombstack.SetConsent(true)`.
 

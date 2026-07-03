@@ -44,6 +44,12 @@ namespace AnkleBreaker.Tombstack
         [Tooltip("Automatically add a breadcrumb when a scene loads or the active scene changes.")]
         [SerializeField] private bool _autoSceneBreadcrumbs = true;
 
+        [Tooltip("Detect app hangs: when the main thread stalls longer than the threshold while foreground, report a 'tmb.app_hang' analytics event (with duration, scene, threshold) once it recovers. Max one report per minute.")]
+        [SerializeField] private bool _detectAppHangs = true;
+
+        [Tooltip("Seconds the main thread must be unresponsive before it counts as an app hang. Minimum 2; 0 disables detection.")]
+        [SerializeField] private float _appHangThresholdSeconds = 5f;
+
         [Tooltip("When ON (default), automatically-caught exceptions are reported even while running in the Unity Editor. Turn OFF to silence automatic exception reports during in-Editor testing — manual Tombstack.ReportException still sends, and shipped builds are unaffected.")]
         [SerializeField] private bool _sendExceptionsInEditor = true;
 
@@ -70,6 +76,8 @@ namespace AnkleBreaker.Tombstack
         public bool DetectUncleanShutdown => _detectUncleanShutdown;
         public bool AutoRttMetric => _autoRttMetric;
         public bool AutoSceneBreadcrumbs => _autoSceneBreadcrumbs;
+        public bool DetectAppHangs => _detectAppHangs;
+        public float AppHangThresholdSeconds => _appHangThresholdSeconds;
         public bool SendExceptionsInEditor => _sendExceptionsInEditor;
         public bool CaptureScreenshotOnBugReport => _captureScreenshotOnBugReport;
         public bool CaptureScreenshotOnException => _captureScreenshotOnException;
