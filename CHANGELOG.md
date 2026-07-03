@@ -2,6 +2,25 @@
 
 All notable changes to `com.anklebreaker.tombstack`.
 
+## [0.9.8] - 2026-07-03
+### Fixed — `TrackEvent`/`TrackMetric` calls made before init are no longer silently dropped
+- Events and metrics tracked **before** the SDK initializes (auto-init runs at `BeforeSceneLoad`;
+  anything fired from an earlier `RuntimeInitializeOnLoadMethod` phase, a static constructor, or a
+  bridge that races auto-init was lost) are now buffered in a bounded pre-init queue (**64** items,
+  drop-oldest) and replayed through the normal pipeline — sampling, truncation, batching — as soon
+  as `Init` completes, keeping their **original timestamps**. Consent still gates the replay: if
+  `RequireConsent` is on and consent hasn't been granted at init time, the buffer is discarded, so
+  pre-consent data never ships. (Found investigating a real integration: startup-phase events like
+  `auth_init` never appeared on the dashboard while gameplay-phase events did.)
+
+### Fixed — pre-init `SetEnvironment` no longer clobbered by auto-init
+- Calling `Tombstack.SetEnvironment(...)` **before** the SDK initializes (e.g. from a bridge in an
+  early `RuntimeInitializeOnLoadMethod` phase — auto-init runs at `BeforeSceneLoad`) was silently
+  overwritten by `Init` applying the config asset's `Environment` (default `"production"`), so the
+  whole session's telemetry landed in the wrong environment. Explicit `SetEnvironment` calls now
+  always win over `Init`'s parameter / the config value, whenever they happen. (Found investigating
+  a real integration: a staging build tagging everything `production`.)
+
 ## [0.9.7] - 2026-07-01
 ### Added — deployment environment (production / development / staging …)
 - **`Tombstack.SetEnvironment(string environment)`** and a new **`environment`** parameter on

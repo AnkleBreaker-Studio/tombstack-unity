@@ -193,6 +193,11 @@ namespace AnkleBreaker.Tombstack
         // Deployment environment stamped on ALL telemetry (crashes, events, metrics, heartbeats, bug reports).
         // Defaults to "production"; set at Init or via SetEnvironment. Empty is treated as "production" server-side.
         private static string _environment = "production";
+        // True once game code called SetEnvironment explicitly. Guards the classic footgun: a bridge
+        // that calls SetEnvironment("staging") in an EARLY RuntimeInitializeOnLoadMethod phase runs
+        // BEFORE autoInit (BeforeSceneLoad), and Init would silently clobber it back to the config
+        // asset's value (default "production") — mis-tagging every payload of the session.
+        private static bool _environmentExplicit;
 
         // Dirty-session state captured at Init, consumed when capture first becomes allowed.
         private static SessionMarkerData _previousMarker;
@@ -239,6 +244,25 @@ namespace AnkleBreaker.Tombstack
             new Dictionary<string, float>(StringComparer.Ordinal);
         private static readonly object _sampleLock = new object();
         [ThreadStatic] private static System.Random _sampleRng;
+
+        // Pre-init capture buffer: TrackEvent/TrackMetric calls made BEFORE the SDK initializes
+        // (auth flows, first-menu analytics — game bridges often run in RuntimeInitializeOnLoadMethod
+        // phases EARLIER than autoInit's BeforeSceneLoad) were silently dropped, losing the whole
+        // startup phase. They now queue here (bounded, drop-oldest) with their ORIGINAL timestamps
+        // and replay through the normal capture gate right after Init — consent + sampling still
+        // apply at replay, so a consent-gated game never ships pre-consent data.
+        private struct PreInitTrack
+        {
+            public bool IsMetric;
+            public string Name;
+            public double Value;
+            public string Unit;
+            public Dictionary<string, string> Props;
+            public string AtIso;
+        }
+        private const int MAX_PRE_INIT_TRACKS = 64;
+        private static readonly List<PreInitTrack> _preInitTracks = new List<PreInitTrack>();
+        private static readonly object _preInitLock = new object();
 
         // §K3 editor live-tail: raised fail-silently on each captured crumb/event/metric/crash so the
         // editor-only Live Tail window can subscribe. Null (no subscriber) in shipped builds → the
@@ -370,8 +394,11 @@ namespace AnkleBreaker.Tombstack
                 }
                 _gameToken = gameToken;
                 _endpoint = endpoint.TrimEnd('/');
-                // Environment: explicit value wins; otherwise keep the "production" default. Clamped to the contract.
-                if (!string.IsNullOrEmpty(environment)) _environment = truncate(environment, MAX_ENVIRONMENT);
+                // Environment precedence: an explicit SetEnvironment call (even BEFORE Init — early
+                // bootstrap bridges do this) always wins over Init's param / the config asset value;
+                // otherwise apply the Init value; otherwise keep the "production" default.
+                if (!_environmentExplicit && !string.IsNullOrEmpty(environment))
+                    _environment = truncate(environment, MAX_ENVIRONMENT);
                 _buildVersion = TombstackPlatform.BuildVersion();
                 _os = TombstackPlatform.Os();
                 _arch = TombstackPlatform.Arch();
@@ -406,6 +433,8 @@ namespace AnkleBreaker.Tombstack
                 TombstackBehaviour.Bootstrap(_endpoint, _gameToken, _sessionId, heartbeatIntervalSeconds);
                 if (_autoSceneBreadcrumbs) hookSceneBreadcrumbs();
                 if (CaptureAllowed) startSessionTracking();
+                // Ship anything TrackEvent/TrackMetric buffered before init (original timestamps).
+                replayPreInitTracks();
             }
             catch (Exception e)
             {
@@ -546,7 +575,13 @@ namespace AnkleBreaker.Tombstack
             try
             {
                 var cleaned = truncate(environment, MAX_ENVIRONMENT);
-                if (!string.IsNullOrEmpty(cleaned)) _environment = cleaned;
+                if (!string.IsNullOrEmpty(cleaned))
+                {
+                    _environment = cleaned;
+                    // Explicit game-code intent survives a LATER Init/auto-init (config default) —
+                    // calling this before init is legal and must not be silently clobbered.
+                    _environmentExplicit = true;
+                }
             }
             catch (Exception e)
             {
@@ -798,6 +833,35 @@ namespace AnkleBreaker.Tombstack
         {
             try
             {
+                if (string.IsNullOrEmpty(name)) return;
+                if (!_initialized)
+                {
+                    // Too early — buffer with the ORIGINAL timestamp and replay right after Init
+                    // (previously these were silently dropped, losing the whole startup phase).
+                    queuePreInit(new PreInitTrack
+                    {
+                        IsMetric = false,
+                        Name = name,
+                        Props = props != null ? new Dictionary<string, string>(props) : null,
+                        AtIso = nowIso(),
+                    });
+                    return;
+                }
+                if (!CaptureAllowed) return; // initialized but consent denied → drop (unchanged)
+                trackEventAt(name, props, nowIso());
+            }
+            catch (Exception e)
+            {
+                TombstackLog.Warn($"TrackEvent failed: {e.Message}");
+            }
+        }
+
+        /// <summary>Build + buffer one event payload with an explicit timestamp (the pre-init replay
+        /// path passes the moment the event actually happened). Caller guarantees init + non-empty name.</summary>
+        private static void trackEventAt(string name, Dictionary<string, string> props, string atIso)
+        {
+            try
+            {
                 if (!CaptureAllowed || string.IsNullOrEmpty(name)) return;
                 // §K1: per-name sampling, applied BEFORE building/buffering so a dropped item costs
                 // nothing beyond the cheap sampler check (no JSON allocation).
@@ -807,7 +871,7 @@ namespace AnkleBreaker.Tombstack
                 var sb = new StringBuilder(EVENT_JSON_CAPACITY);
                 sb.Append('{');
                 bool first = true;
-                TombstackJson.AppendField(sb, "occurredAtIso", nowIso(), ref first);
+                TombstackJson.AppendField(sb, "occurredAtIso", atIso, ref first);
                 TombstackJson.AppendField(sb, "buildVersion", _buildVersion, ref first);
                 TombstackJson.AppendField(sb, "os", _os, ref first);
                 TombstackJson.AppendField(sb, "arch", _arch, ref first);
@@ -829,6 +893,37 @@ namespace AnkleBreaker.Tombstack
             }
         }
 
+        /// <summary>Bounded pre-init queue (drop-oldest at 64) — see the _preInitTracks doc block.</summary>
+        private static void queuePreInit(PreInitTrack item)
+        {
+            lock (_preInitLock)
+            {
+                if (_preInitTracks.Count >= MAX_PRE_INIT_TRACKS) _preInitTracks.RemoveAt(0);
+                _preInitTracks.Add(item);
+            }
+        }
+
+        /// <summary>Replay buffered pre-init events/metrics through the normal capture pipeline —
+        /// called once at the end of Init. Consent + sampling apply at replay time, so a
+        /// consent-gated game drops (never ships) anything captured before consent.</summary>
+        private static void replayPreInitTracks()
+        {
+            PreInitTrack[] pending;
+            lock (_preInitLock)
+            {
+                if (_preInitTracks.Count == 0) return;
+                pending = _preInitTracks.ToArray();
+                _preInitTracks.Clear();
+            }
+            if (!CaptureAllowed) return; // consent not granted (yet) — pre-consent data must not ship
+            foreach (var t in pending)
+            {
+                if (t.IsMetric) trackMetricAt(t.Name, t.Value, t.Unit, t.AtIso);
+                else trackEventAt(t.Name, t.Props, t.AtIso);
+            }
+            TombstackLog.Info($"replayed {pending.Length} pre-init event(s)/metric(s)");
+        }
+
         /// <summary>
         /// Record a numeric metric (e.g. tickrate, RTT, CCU). Batched client-side (§16) and flushed
         /// on count/age/pause/quit/pre-crash. <paramref name="value"/> must be finite. Fail-silent;
@@ -838,6 +933,27 @@ namespace AnkleBreaker.Tombstack
         /// <param name="value">Finite numeric sample (NaN/Infinity are dropped, never shipped).</param>
         /// <param name="unit">Optional unit label (clamped to 16 chars), e.g. "ms".</param>
         public static void TrackMetric(string name, double value, string unit = null)
+        {
+            try
+            {
+                if (string.IsNullOrEmpty(name)) return;
+                if (double.IsNaN(value) || double.IsInfinity(value)) return; // never ship a bad sample
+                if (!_initialized)
+                {
+                    queuePreInit(new PreInitTrack { IsMetric = true, Name = name, Value = value, Unit = unit, AtIso = nowIso() });
+                    return;
+                }
+                if (!CaptureAllowed) return; // initialized but consent denied → drop (unchanged)
+                trackMetricAt(name, value, unit, nowIso());
+            }
+            catch (Exception e)
+            {
+                TombstackLog.Warn($"TrackMetric failed: {e.Message}");
+            }
+        }
+
+        /// <summary>Build + buffer one metric payload with an explicit timestamp (pre-init replay path).</summary>
+        private static void trackMetricAt(string name, double value, string unit, string atIso)
         {
             try
             {
@@ -855,7 +971,7 @@ namespace AnkleBreaker.Tombstack
                 TombstackJson.AppendNumberField(sb, "value", value, ref first);
                 if (!string.IsNullOrEmpty(unit))
                     TombstackJson.AppendField(sb, "unit", truncate(unit, MAX_METRIC_UNIT), ref first);
-                TombstackJson.AppendField(sb, "occurredAtIso", nowIso(), ref first);
+                TombstackJson.AppendField(sb, "occurredAtIso", atIso, ref first);
                 TombstackJson.AppendField(sb, "buildVersion", _buildVersion, ref first);
                 TombstackJson.AppendField(sb, "os", _os, ref first);
                 TombstackJson.AppendField(sb, "arch", _arch, ref first);
