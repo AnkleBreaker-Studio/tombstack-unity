@@ -18,6 +18,7 @@ cases with **zero further integration**:
 | AppDomain unhandled exceptions | ✅ Automatic | `AppDomain.CurrentDomain.UnhandledException` (write-ahead persisted before the process dies) |
 | Errors / warnings / logs as breadcrumbs | ✅ Automatic | Every Unity log line → 50-entry ring, attached to crashes & bug reports |
 | Player log upload on crash | ✅ Automatic | Rolling ~512 KB `session.log`, PUT to a presigned URL after the crash report's 2xx |
+| Screenshot attachment | ✅ Automatic (bug reports; opt-in on exceptions) | End-of-frame capture, downscaled (config cap, default 1280 px), uploaded via the presigned `screenshotUpload` after the report's 2xx — ON by default for bug reports; exception screenshots are opt-in + throttled |
 | Unclean shutdown (hard crash / OOM kill / force quit) | ✅ Automatic (next launch) | `session.lock` marker + preserved `previous-session.log`, reported as signature `unclean-shutdown` |
 | Session heartbeats / CCU | ✅ Automatic | Every N seconds (default 60) |
 | Offline durability + retry | ✅ Automatic | Write-ahead queue, exponential backoff, next-launch retry |
@@ -41,13 +42,13 @@ All three autonomy systems can be toggled on the config asset (`Auto Capture Exc
 **Via UPM git URL** (public mirror) — Window ▸ Package Manager ▸ `+` ▸ *Add package from git URL…*:
 
 ```
-https://github.com/AnkleBreaker-Studio/tombstack-unity.git#v0.9.9
+https://github.com/AnkleBreaker-Studio/tombstack-unity.git#v0.10.0
 ```
 
 Or add to `Packages/manifest.json`:
 
 ```jsonc
-{ "dependencies": { "com.anklebreaker.tombstack": "https://github.com/AnkleBreaker-Studio/tombstack-unity.git#v0.9.9" } }
+{ "dependencies": { "com.anklebreaker.tombstack": "https://github.com/AnkleBreaker-Studio/tombstack-unity.git#v0.10.0" } }
 ```
 
 Or copy `unity/` into your project's `Packages/`. Requires Unity **6 (6000.0)+** (Mono and IL2CPP).
@@ -176,6 +177,12 @@ try { Load(); } catch (Exception e) { Tombstack.ReportException(e); }
   a `[Tombstack]` prefix.
 - Auto-fills `buildVersion` (`Application.version`) and `os`/`arch` (platform mapping), cached
   at Init so capture is safe from any thread.
+- **Pre-init safety (0.9.8+):** an explicit `SetEnvironment(...)` always wins over `Init`'s
+  parameter / the config asset, even when called before the SDK initializes; pre-init
+  `TrackEvent`/`TrackMetric` calls are buffered (bounded 64, drop-oldest) and replayed through
+  the normal pipeline after `Init` with their original timestamps (consent still gates the replay).
+- **Platforms (0.9.9+):** `os` maps `RuntimePlatform.Android → "android"` and
+  `IPhonePlayer → "ios"` (previously both fell through to `other`).
 
 ## Public API
 ```csharp
@@ -185,6 +192,17 @@ Tombstack.SetConsent(bool granted);
 Tombstack.TrackEvent(name, Dictionary<string,string> props = null);
 Tombstack.TrackMetric(name, double value, string unit = null);
 Tombstack.SetSampleRate(name, float rate0to1);   // per-name keep-probability for events/metrics
+
+// Standard event taxonomy (0.10.0+) — typed wrappers over TrackEvent that emit reserved tmb.*
+// names (plain custom events underneath: batching / pre-init buffering / consent / sampling all
+// apply). The dashboard auto-recognizes tmb.progression and renders a per-(area, level)
+// progression table on the Analytics page.
+Tombstack.TrackProgression(ProgressionStatus status, area, level = null, phase = null,
+    attempt = 0, score = double.NaN);            // "tmb.progression"
+Tombstack.TrackEconomy(ResourceFlow flow, currency, double amount,
+    itemType = null, itemId = null, balance = double.NaN);  // "tmb.economy"
+Tombstack.TrackPurchase(productId, store, currencyCode, long amountMinorUnits); // "tmb.purchase"
+Tombstack.TrackAdImpression(network, placement, revenueMicros = double.NaN);    // "tmb.ad_impression"
 Tombstack.AddBreadcrumb(message, BreadcrumbLevel level = Info, category = null);
 Tombstack.ReportException(exception);
 Tombstack.ReportBug(message, category = null);
@@ -227,7 +245,6 @@ no reflection-based serialization beyond JsonUtility, no dynamic codegen.
 ## Not yet
 - Native crash core (Windows SEH / POSIX signals / Mach) + on-disk minidump upload —
   managed exceptions are covered today; native is the next track (`../native/`, plan written).
-- Screenshot attachment on bug reports (server presign flow exists; SDK side pending).
 - Breadcrumb `category` as a first-class wire field (currently folded into the message as a
   `[category] ` prefix — the ingest schema has no category field yet).
 

@@ -10,9 +10,11 @@ your Tombstack account. Requires **Unity 6 (6000.0)** or newer.
 
 ### 1. Install
 
-- Package Manager ▸ `+` ▸ *Add package from git URL…* →
-  `https://github.com/AnkleBreaker-Studio/tombstack.git?path=unity`
-- Or import from the Unity Asset Store / copy the folder into `Packages/`.
+- **Tarball (recommended):** download `com.anklebreaker.tombstack-0.10.0.tgz` from
+  `https://tombstack.com/downloads/com.anklebreaker.tombstack-0.10.0.tgz`, then
+  Package Manager ▸ `+` ▸ *Add package from tarball…*
+- Or Package Manager ▸ `+` ▸ *Add package from git URL…* →
+  `https://github.com/AnkleBreaker-Studio/tombstack-unity.git#v0.10.0`
 
 ### 2. Sign in (mandatory)
 
@@ -56,7 +58,7 @@ Enter Play Mode and throw a test exception — it appears on the dashboard withi
 throw new System.Exception("Tombstack smoke test");
 ```
 
-## What's automatic (v0.5.0)
+## What's automatic
 
 Once initialized, the SDK needs no further integration for the common cases:
 
@@ -96,6 +98,7 @@ calls `Tombstack.SetConsent(true)`.
 |---|---|
 | Base URL override | Point the plugin + SDK at a self-hosted/staging Tombstack tenant. Re-link after changing it. |
 | Heartbeat (s) | Seconds between session heartbeats (written into the config asset; runtime clamps 15–600). |
+| Environment | Deployment-environment label (production / staging / …) stamped on every payload; written into the config asset. Defaults to `production`. |
 | Require consent | When on, the SDK captures nothing until your game calls `Tombstack.SetConsent(true)`. |
 | Unlink project | Clears the game binding and blanks the SDK token in the config asset. |
 | Sign out | Invalidates and deletes the editor token. |
@@ -103,14 +106,29 @@ calls `Tombstack.SetConsent(true)`.
 ## Runtime API (summary)
 
 ```csharp
-Tombstack.Init(gameToken, endpoint, heartbeatIntervalSeconds = 60f); // auto-called via TombstackConfig
+Tombstack.Init(gameToken, endpoint, heartbeatIntervalSeconds = 60f, environment = null); // auto-called via TombstackConfig
 Tombstack.SetConsent(bool granted);
 Tombstack.SetUser(userId, steamId = null);
+Tombstack.SetUserMetadata(Dictionary<string,string> metadata);   // per-player custom metadata
+Tombstack.SetEnvironment(environment);                           // production / staging / … — wins over Init/config
 Tombstack.TrackEvent(name, Dictionary<string,string> props = null);
+Tombstack.TrackMetric(name, double value, string unit = null);
+Tombstack.SetSampleRate(name, float rate0to1);                   // per-name keep-probability
 Tombstack.AddBreadcrumb(message, BreadcrumbLevel level = Info, category = null);
 Tombstack.ReportException(exception);
 Tombstack.ReportBug(message, category = null);
+Tombstack.SetMatchContext(serverId, matchId);                    // multiplayer correlation
+Tombstack.SetServerInfo(region, hostname);                       // fleet labels
+string matchId = Tombstack.StartMatch();                         // server: flips role to "server"
+Tombstack.EndMatch();
+Tombstack.RequestPlayerLogs(target, targetValue, reason);        // write-scoped server token
+TombstackDiagnostics diag = Tombstack.GetDiagnostics();          // readonly snapshot
 ```
+
+`SetEnvironment`, `TrackEvent`, and `TrackMetric` are safe to call **before** `Init`: an explicit
+`SetEnvironment` always wins over `Init`'s parameter / the config asset, and pre-init
+events/metrics are buffered (64, drop-oldest) and replayed with their original timestamps once
+the SDK initializes.
 
 See the package `README.md` for full runtime behavior (offline-first durable queue,
 breadcrumbs, consent gating, fail-silent guarantees).
@@ -137,4 +155,4 @@ breadcrumbs, consent gating, fail-silent guarantees).
 
 ## Support
 
-- Issues: https://github.com/AnkleBreaker-Studio/tombstack/issues
+- Issues: https://github.com/AnkleBreaker-Studio/tombstack-unity/issues

@@ -1,5 +1,6 @@
 using System;
 using System.Collections.Generic;
+using System.Globalization;
 using System.Security.Cryptography;
 using System.Text;
 using System.Threading.Tasks;
@@ -137,6 +138,12 @@ namespace AnkleBreaker.Tombstack
         internal const string CRASHES_PATH = "/api/v1/ingest/crashes";
         private const string BUG_REPORTS_PATH = "/api/v1/ingest/bug-reports";
         private const string EVENTS_PATH = "/api/v1/ingest/events";
+        // Standard event taxonomy (tmb.* names): plain custom events underneath — the dashboard
+        // auto-recognizes them (e.g. tmb.progression renders a per-(area, level) progression table).
+        private const string TAXONOMY_PROGRESSION = "tmb.progression";
+        private const string TAXONOMY_ECONOMY = "tmb.economy";
+        private const string TAXONOMY_PURCHASE = "tmb.purchase";
+        private const string TAXONOMY_AD_IMPRESSION = "tmb.ad_impression";
         private const string PULL_REQUESTS_PATH = "/api/v1/pull-requests";
         /// <summary>Sentinel for the <see cref="RequestPlayerLogs(string,string)"/> convenience
         /// overload: pull every player connected to THIS dedicated server (uses the current serverId).</summary>
@@ -854,6 +861,158 @@ namespace AnkleBreaker.Tombstack
             {
                 TombstackLog.Warn($"TrackEvent failed: {e.Message}");
             }
+        }
+
+        /// <summary>
+        /// Standard taxonomy: level/area progression ("tmb.progression"). A thin wrapper over
+        /// <see cref="TrackEvent"/> — batching, pre-init buffering, consent, and sampling all
+        /// apply. The dashboard auto-recognizes the name and renders a per-(area, level)
+        /// progression table (starts / completes / fails / fail:complete / completion %).
+        /// </summary>
+        /// <param name="status">Start / Fail / Complete.</param>
+        /// <param name="area">Logical area or world (required; empty → fail-silent drop), e.g. "world-1".</param>
+        /// <param name="level">Optional level id within the area, e.g. "1-3".</param>
+        /// <param name="phase">Optional phase within the level, e.g. "boss".</param>
+        /// <param name="attempt">Attempt number — sent only when &gt; 0.</param>
+        /// <param name="score">Optional score — sent only when finite (default NaN omits it).</param>
+        public static void TrackProgression(
+            ProgressionStatus status, string area, string level = null, string phase = null,
+            int attempt = 0, double score = double.NaN)
+        {
+            try
+            {
+                if (string.IsNullOrEmpty(area)) return;
+                var props = new Dictionary<string, string>
+                {
+                    { "status", progressionStatusLabel(status) },
+                    { "area", area },
+                };
+                if (!string.IsNullOrEmpty(level)) props["level"] = level;
+                if (!string.IsNullOrEmpty(phase)) props["phase"] = phase;
+                if (attempt > 0) props["attempt"] = attempt.ToString(CultureInfo.InvariantCulture);
+                addFiniteDouble(props, "score", score);
+                TrackEvent(TAXONOMY_PROGRESSION, props);
+            }
+            catch (Exception e)
+            {
+                TombstackLog.Warn($"TrackProgression failed: {e.Message}");
+            }
+        }
+
+        /// <summary>
+        /// Standard taxonomy: virtual-economy movement ("tmb.economy") — a source grants
+        /// currency, a sink spends it. Thin wrapper over <see cref="TrackEvent"/> (batching,
+        /// pre-init buffering, consent, and sampling all apply).
+        /// </summary>
+        /// <param name="flow">Source (granted) / Sink (spent).</param>
+        /// <param name="currency">Virtual currency name (required; empty → fail-silent drop), e.g. "gold".</param>
+        /// <param name="amount">Amount moved (required; NaN/Infinity → fail-silent drop).</param>
+        /// <param name="itemType">Optional item category, e.g. "weapon".</param>
+        /// <param name="itemId">Optional item id, e.g. "sword_mithrall".</param>
+        /// <param name="balance">Optional post-transaction balance — sent only when finite.</param>
+        public static void TrackEconomy(
+            ResourceFlow flow, string currency, double amount,
+            string itemType = null, string itemId = null, double balance = double.NaN)
+        {
+            try
+            {
+                if (string.IsNullOrEmpty(currency)) return;
+                if (double.IsNaN(amount) || double.IsInfinity(amount)) return;
+                var props = new Dictionary<string, string>
+                {
+                    { "flow", resourceFlowLabel(flow) },
+                    { "currency", currency },
+                    { "amount", amount.ToString("R", CultureInfo.InvariantCulture) },
+                };
+                if (!string.IsNullOrEmpty(itemType)) props["itemType"] = itemType;
+                if (!string.IsNullOrEmpty(itemId)) props["itemId"] = itemId;
+                addFiniteDouble(props, "balance", balance);
+                TrackEvent(TAXONOMY_ECONOMY, props);
+            }
+            catch (Exception e)
+            {
+                TombstackLog.Warn($"TrackEconomy failed: {e.Message}");
+            }
+        }
+
+        /// <summary>
+        /// Standard taxonomy: real-money purchase ("tmb.purchase"). Amount is in MINOR units
+        /// (cents / yen / …) to avoid floating-point money. No receipt payload in v1. Thin
+        /// wrapper over <see cref="TrackEvent"/> (batching, pre-init buffering, consent,
+        /// and sampling all apply).
+        /// </summary>
+        /// <param name="productId">Store product id (required; empty → fail-silent drop), e.g. "com.game.gems_500".</param>
+        /// <param name="store">Storefront (required), e.g. "steam" / "apple" / "google".</param>
+        /// <param name="currencyCode">ISO-4217 currency code (required), e.g. "EUR".</param>
+        /// <param name="amountMinorUnits">Price in minor units, e.g. 499 for €4.99.</param>
+        public static void TrackPurchase(string productId, string store, string currencyCode, long amountMinorUnits)
+        {
+            try
+            {
+                if (string.IsNullOrEmpty(productId) || string.IsNullOrEmpty(store) || string.IsNullOrEmpty(currencyCode)) return;
+                TrackEvent(TAXONOMY_PURCHASE, new Dictionary<string, string>
+                {
+                    { "productId", productId },
+                    { "store", store },
+                    { "currency", currencyCode },
+                    { "amount_minor", amountMinorUnits.ToString(CultureInfo.InvariantCulture) },
+                });
+            }
+            catch (Exception e)
+            {
+                TombstackLog.Warn($"TrackPurchase failed: {e.Message}");
+            }
+        }
+
+        /// <summary>
+        /// Standard taxonomy: ad impression ("tmb.ad_impression"). Thin wrapper over
+        /// <see cref="TrackEvent"/> (batching, pre-init buffering, consent, and sampling all apply).
+        /// </summary>
+        /// <param name="network">Ad network (required; empty → fail-silent drop), e.g. "admob".</param>
+        /// <param name="placement">Placement id (required), e.g. "level_end_interstitial".</param>
+        /// <param name="revenueMicros">Optional revenue in micros — sent only when finite (default NaN omits it).</param>
+        public static void TrackAdImpression(string network, string placement, double revenueMicros = double.NaN)
+        {
+            try
+            {
+                if (string.IsNullOrEmpty(network) || string.IsNullOrEmpty(placement)) return;
+                var props = new Dictionary<string, string>
+                {
+                    { "network", network },
+                    { "placement", placement },
+                };
+                addFiniteDouble(props, "revenue_micros", revenueMicros);
+                TrackEvent(TAXONOMY_AD_IMPRESSION, props);
+            }
+            catch (Exception e)
+            {
+                TombstackLog.Warn($"TrackAdImpression failed: {e.Message}");
+            }
+        }
+
+        /// <summary>Wire label for a progression status ("start" / "fail" / "complete").</summary>
+        private static string progressionStatusLabel(ProgressionStatus status)
+        {
+            switch (status)
+            {
+                case ProgressionStatus.Start: return "start";
+                case ProgressionStatus.Fail: return "fail";
+                default: return "complete";
+            }
+        }
+
+        /// <summary>Wire label for a resource flow ("source" / "sink").</summary>
+        private static string resourceFlowLabel(ResourceFlow flow)
+        {
+            return flow == ResourceFlow.Source ? "source" : "sink";
+        }
+
+        /// <summary>Add a double attribute only when finite, round-trip formatted with
+        /// InvariantCulture (NaN/Infinity are omitted, never shipped — same rule as TrackMetric).</summary>
+        private static void addFiniteDouble(Dictionary<string, string> props, string key, double value)
+        {
+            if (double.IsNaN(value) || double.IsInfinity(value)) return;
+            props[key] = value.ToString("R", CultureInfo.InvariantCulture);
         }
 
         /// <summary>Build + buffer one event payload with an explicit timestamp (the pre-init replay

@@ -2,6 +2,31 @@
 
 All notable changes to `com.anklebreaker.tombstack`.
 
+## [0.10.0] - 2026-07-03
+### Added — standard event taxonomy (`tmb.*`)
+Four typed helpers on the `Tombstack` facade. They are **plain custom events underneath** —
+each builds a flat attribute map and flows through the existing `TrackEvent` pipeline, so
+batching, pre-init buffering, consent gating, and per-name sampling all apply automatically,
+and everything shows up in the normal event browser / funnels. Dashboards additionally
+auto-recognize `tmb.progression` and render a per-(area, level) progression table (starts /
+completes / fails / fail:complete / completion %) on the Analytics page.
+- `TrackProgression(ProgressionStatus status, area, level?, phase?, attempt = 0, score = NaN)`
+  → `tmb.progression` with `status` (`start|fail|complete`), `area`, optional `level`/`phase`,
+  `attempt` (sent when > 0), `score` (sent when finite).
+- `TrackEconomy(ResourceFlow flow, currency, amount, itemType?, itemId?, balance = NaN)`
+  → `tmb.economy` with `flow` (`source|sink`), `currency`, `amount`, optional
+  `itemType`/`itemId`, `balance` (sent when finite).
+- `TrackPurchase(productId, store, currencyCode, amountMinorUnits)` → `tmb.purchase` with
+  `productId`, `store`, `currency`, `amount_minor` (minor units — cents/yen — so no
+  floating-point money). No receipt payload in v1.
+- `TrackAdImpression(network, placement, revenueMicros = NaN)` → `tmb.ad_impression` with
+  `network`, `placement`, `revenue_micros` (sent when finite).
+
+All helpers are fail-silent like the rest of the SDK (missing required args or a non-finite
+required amount drop the call, never throw); doubles serialize with
+`CultureInfo.InvariantCulture` round-trip formatting. New public enums `ProgressionStatus`
+and `ResourceFlow`.
+
 ## [0.9.9] - 2026-07-03
 ### Fixed — Android and iOS report their real platform instead of `other`
 - `RuntimePlatform.Android` now maps to **`android`** and `RuntimePlatform.IPhonePlayer` to
