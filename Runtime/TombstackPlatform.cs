@@ -30,6 +30,10 @@ namespace AnkleBreaker.Tombstack
                 case RuntimePlatform.LinuxPlayer:
                 case RuntimePlatform.LinuxEditor:
                     return "linux";
+                case RuntimePlatform.Android:
+                    return "android";
+                case RuntimePlatform.IPhonePlayer:
+                    return "ios";
                 default:
                     return "other";
             }

@@ -2,6 +2,14 @@
 
 All notable changes to `com.anklebreaker.tombstack`.
 
+## [0.9.9] - 2026-07-03
+### Fixed — Android and iOS report their real platform instead of `other`
+- `RuntimePlatform.Android` now maps to **`android`** and `RuntimePlatform.IPhonePlayer` to
+  **`ios`** on every payload's `os` field (previously both fell through to `other`, so a mobile
+  build showed as `other/arm64` across the whole dashboard). The server whitelist accepts the new
+  values as of the same release; rows already ingested as `other` are immutable and age out with
+  the 90-day retention.
+
 ## [0.9.8] - 2026-07-03
 ### Fixed — `TrackEvent`/`TrackMetric` calls made before init are no longer silently dropped
 - Events and metrics tracked **before** the SDK initializes (auto-init runs at `BeforeSceneLoad`;

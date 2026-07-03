@@ -41,13 +41,13 @@ All three autonomy systems can be toggled on the config asset (`Auto Capture Exc
 **Via UPM git URL** (public mirror) — Window ▸ Package Manager ▸ `+` ▸ *Add package from git URL…*:
 
 ```
-https://github.com/AnkleBreaker-Studio/tombstack-unity.git#v0.9.8
+https://github.com/AnkleBreaker-Studio/tombstack-unity.git#v0.9.9
 ```
 
 Or add to `Packages/manifest.json`:
 
 ```jsonc
-{ "dependencies": { "com.anklebreaker.tombstack": "https://github.com/AnkleBreaker-Studio/tombstack-unity.git#v0.9.8" } }
+{ "dependencies": { "com.anklebreaker.tombstack": "https://github.com/AnkleBreaker-Studio/tombstack-unity.git#v0.9.9" } }
 ```
 
 Or copy `unity/` into your project's `Packages/`. Requires Unity **6 (6000.0)+** (Mono and IL2CPP).
