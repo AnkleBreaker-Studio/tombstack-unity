@@ -2,6 +2,17 @@
 
 All notable changes to `com.anklebreaker.tombstack`.
 
+## [0.13.0] - 2026-07-04
+### Added — `MarkDedicatedServer` (server identity without matches)
+`Tombstack.MarkDedicatedServer(serverId, region?, hostname?)` — declare the process a
+dedicated server once at boot. Flips the emitter role to `"server"` and sets the server id
+(plus optional region/hostname, `SetServerInfo` semantics), so the box registers in the
+Fleet/Servers dashboard and its heartbeats group into per-boot **server sessions** even if
+it never hosts a match. Previously only `StartMatch()` flipped the role, so a matchless
+dedicated server never appeared in the fleet. Non-destructive: null/empty arguments keep
+previously set values. Clients must never call it — a mis-tagged client disappears from
+player analytics. `SetMatchContext`/`StartMatch`/`EndMatch` are unchanged.
+
 ## [0.12.0] - 2026-07-04
 ### Added — granular capture toggles
 Studios can now switch individual SDK subsystems on/off instead of all-or-nothing consent.

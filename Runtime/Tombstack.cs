@@ -603,7 +603,8 @@ namespace AnkleBreaker.Tombstack
         /// Tag subsequent telemetry with the server + match it belongs to, so crashes, events,
         /// bug reports, and heartbeats correlate to a specific dedicated server and match.
         /// Both ids are clamped to the server contract (128 chars); pass null/"" to clear one.
-        /// Does not change the role — call <see cref="StartMatch"/> on a dedicated server.
+        /// Does not change the role — a dedicated server should declare itself via
+        /// <see cref="MarkDedicatedServer"/> (or <see cref="StartMatch"/> when hosting matches).
         /// </summary>
         /// <param name="serverId">Your stable dedicated-server identifier (e.g. "srv-eu-1").</param>
         /// <param name="matchId">The current match/session identifier (e.g. "m-42").</param>
@@ -643,6 +644,37 @@ namespace AnkleBreaker.Tombstack
             catch (Exception e)
             {
                 TombstackLog.Warn($"SetServerInfo failed: {e.Message}");
+            }
+        }
+
+        /// <summary>
+        /// Declare this process a DEDICATED SERVER with a stable identity — call once at boot,
+        /// before or right after <see cref="Init"/>. Flips the emitter role to "server" and sets
+        /// the server id, so the box registers in the Fleet/Servers dashboard and its heartbeats
+        /// group into per-boot server sessions EVEN IF it never hosts a match. (Previously only
+        /// <see cref="StartMatch"/> flipped the role, so a matchless server never registered.)
+        /// Optional region/hostname follow <see cref="SetServerInfo"/> semantics. Clients must
+        /// never call this — a mis-tagged client vanishes from player analytics.
+        /// </summary>
+        /// <param name="serverId">Your stable dedicated-server identifier (e.g. "srv-eu-1").
+        /// Null/empty keeps any previously set id (never blanks an identity).</param>
+        /// <param name="region">Optional cloud region label, e.g. "eu-west-1".</param>
+        /// <param name="hostname">Optional machine hostname, e.g. <c>Environment.MachineName</c>.</param>
+        public static void MarkDedicatedServer(string serverId, string region = null, string hostname = null)
+        {
+            try
+            {
+                _role = "server";
+                var cleanedId = truncate(serverId, MAX_CONTEXT_ID);
+                if (!string.IsNullOrEmpty(cleanedId)) _serverId = cleanedId;
+                var cleanedRegion = truncate(region, MAX_REGION);
+                if (!string.IsNullOrEmpty(cleanedRegion)) _region = cleanedRegion;
+                var cleanedHost = truncate(hostname, MAX_HOSTNAME);
+                if (!string.IsNullOrEmpty(cleanedHost)) _hostname = cleanedHost;
+            }
+            catch (Exception e)
+            {
+                TombstackLog.Warn($"MarkDedicatedServer failed: {e.Message}");
             }
         }
 
