@@ -344,7 +344,7 @@ namespace AnkleBreaker.Tombstack
                 // interval so a runtime flip pauses/resumes the loop on its next tick.
                 if (Tombstack.CaptureAllowed && Tombstack.HeartbeatsEnabled)
                 {
-                    var json = buildHeartbeatJson(out var pendingMetadataJson, out var metadataEpoch);
+                    var json = buildHeartbeatJson(out var pendingMetadataJson, out var metadataEpoch, out var carriedDevice);
                     if (json != null)
                     {
                         // Heartbeats are ephemeral — a missed beat is stale data, never retried.
@@ -354,6 +354,8 @@ namespace AnkleBreaker.Tombstack
                         // must leave the change/clear pending so the next beat re-sends it.
                         beat.PendingUserMetadataJson = pendingMetadataJson;
                         beat.PendingUserMetadataEpoch = metadataEpoch;
+                        // Same discipline for the one-time device snapshot (0.14): mark delivered on 2xx only.
+                        beat.CarriedDevice = carriedDevice;
                         yield return send(beat);
                     }
                 }
@@ -361,13 +363,21 @@ namespace AnkleBreaker.Tombstack
             }
         }
 
+        // True once a heartbeat carrying the device snapshot was ACKED this session/boot — the
+        // snapshot rides every beat until then (a lost beat re-sends it), then never again, so the
+        // per-session cost is one ~300-byte object. Same delivery discipline as the metadata M1 path.
+        private bool _deviceSentOnHeartbeat;
+
         /// <summary>Build the heartbeat body; userId attribution feeds the Sessions/Fleet screens. Any
         /// pending user-metadata change is spliced in AND returned via the out-params so the caller can
-        /// commit the baseline only once the beat is acked (M1); both are null/0 when nothing changed.</summary>
-        private string buildHeartbeatJson(out string pendingMetadataJson, out long metadataEpoch)
+        /// commit the baseline only once the beat is acked (M1); both are null/0 when nothing changed.
+        /// <paramref name="carriedDevice"/> is true when this beat carries the one-time device snapshot
+        /// (0.14) — the caller marks it delivered only on the beat's 2xx.</summary>
+        private string buildHeartbeatJson(out string pendingMetadataJson, out long metadataEpoch, out bool carriedDevice)
         {
             pendingMetadataJson = null;
             metadataEpoch = 0;
+            carriedDevice = false;
             try
             {
                 var hb = new HeartbeatPayload
@@ -405,6 +415,18 @@ namespace AnkleBreaker.Tombstack
                 if (frameJson != null && json.Length >= 2 && json[json.Length - 1] == '}')
                 {
                     json = json.Substring(0, json.Length - 1) + "," + frameJson + "}";
+                }
+                // Device snapshot (0.14): spliced like the metadata object, carried until one beat
+                // is ACKED (see _deviceSentOnHeartbeat) — gives the player profile hardware specs
+                // for every session, not just crashing ones.
+                if (!_deviceSentOnHeartbeat && json.Length >= 2 && json[json.Length - 1] == '}')
+                {
+                    var deviceJson = Tombstack.DeviceJsonForHeartbeat();
+                    if (deviceJson != null)
+                    {
+                        json = json.Substring(0, json.Length - 1) + ",\"device\":" + deviceJson + "}";
+                        carriedDevice = true;
+                    }
                 }
                 return json;
             }
@@ -535,6 +557,8 @@ namespace AnkleBreaker.Tombstack
                         // pre-login beat's late ack can't clobber a SetUser baseline reset (M2).
                         if (item.PendingUserMetadataJson != null)
                             Tombstack.CommitUserMetadataForHeartbeat(item.PendingUserMetadataJson, item.PendingUserMetadataEpoch);
+                        // The one-time device snapshot delivered — stop carrying it (0.14).
+                        if (item.CarriedDevice) _deviceSentOnHeartbeat = true;
                     }
                     return;
                 }
@@ -776,6 +800,9 @@ namespace AnkleBreaker.Tombstack
             // beat carries no metadata change. Mutable, set right after Post; never persisted.
             public string PendingUserMetadataJson;
             public long PendingUserMetadataEpoch;
+            // True when this heartbeat carries the one-time device snapshot (0.14) — on its 2xx the
+            // behaviour stops attaching it for the rest of the session. Mutable, never persisted.
+            public bool CarriedDevice;
             public string FilePath; // non-null when the item is backed by a persisted file
             public int Attempt;     // in-session retry counter
 

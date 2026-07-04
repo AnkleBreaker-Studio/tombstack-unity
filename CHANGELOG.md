@@ -2,6 +2,16 @@
 
 All notable changes to `com.anklebreaker.tombstack`.
 
+## [0.14.0] - 2026-07-04
+### Added — device specs on the first heartbeat (player hardware profiles)
+The Init-time device snapshot (model, CPU, cores, RAM, GPU, VRAM, display, engine — the same
+object crash and bug reports already carry) now also rides the session's heartbeats **until one
+is acked, then never again** (~300 bytes, once per session). The dashboard aggregates these into
+the player profile's new **Hardware** section: every distinct machine a player has used, with
+first/last-seen dates, and the specs of their most recent session — previously specs existed
+only for sessions that crashed or filed a bug report. Lost beats re-carry the snapshot; the
+delivery discipline mirrors the user-metadata M1 path. No new API — fully automatic after Init.
+
 ## [0.13.0] - 2026-07-04
 ### Added — `MarkDedicatedServer` (server identity without matches)
 `Tombstack.MarkDedicatedServer(serverId, region?, hostname?)` — declare the process a

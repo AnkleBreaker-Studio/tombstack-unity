@@ -124,8 +124,10 @@ namespace AnkleBreaker.Tombstack
     }
 
     /// <summary>Static device + runtime context, snapshotted once at Init on the main thread and attached
-    /// to crash + bug reports. JsonUtility emits every field (empty string / 0 when unknown); the server
-    /// keeps only the non-empty values. Mirrors the server <c>deviceSchema</c>.</summary>
+    /// to crash + bug reports AND (0.14+) the first acked heartbeat of each session — so the player
+    /// profile's Hardware section has specs even for sessions that never crash. JsonUtility emits every
+    /// field (empty string / 0 when unknown); the server keeps only the non-empty values. Mirrors the
+    /// server <c>deviceSchema</c>.</summary>
     [Serializable]
     public class DevicePayload
     {

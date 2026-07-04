@@ -351,6 +351,24 @@ namespace AnkleBreaker.Tombstack
         /// (the server deletes the stored record on an empty object). JsonUtility can't serialize a
         /// Dictionary, so the map is hand-serialized (keys/values escaped via TombstackJson). Thread-safe.
         /// </summary>
+        /// <summary>The Init-time device snapshot as a JSON object for the heartbeat splice, or null
+        /// when no snapshot was captured. The behaviour attaches it to heartbeats until one is ACKED
+        /// (once per session/boot) so the player profile's Hardware section gets specs even for
+        /// sessions that never crash. Serialization is JsonUtility on the cached payload — cheap,
+        /// and identical to the crash/bug-report device field.</summary>
+        internal static string DeviceJsonForHeartbeat()
+        {
+            try
+            {
+                return _device != null ? JsonUtility.ToJson(_device) : null;
+            }
+            catch (Exception e)
+            {
+                TombstackLog.Warn($"device json failed: {e.Message}");
+                return null;
+            }
+        }
+
         internal static string PeekUserMetadataForHeartbeat(out long epoch)
         {
             lock (_userMetadataLock)
