@@ -2,6 +2,38 @@
 
 All notable changes to `com.anklebreaker.tombstack`.
 
+## [0.12.0] - 2026-07-04
+### Added — granular capture toggles
+Studios can now switch individual SDK subsystems on/off instead of all-or-nothing consent.
+
+New config-asset toggles (`TombstackConfigSO`, both default **ON** — existing assets keep
+today's behavior):
+- `Send Heartbeats` — gates the periodic session-heartbeat loop. Turning it OFF logs a
+  **warning at init**: live CCU, sessions, crash-free %, releases, fleet liveness,
+  user-metadata delivery, and server-triggered log pulls all go dark without heartbeats.
+- `Collect Frame Stats` — gates the 0.11 per-frame sampler; OFF omits
+  `fpsAvg`/`slowFramePct`/`hitchCount`/`worstFrameMs` from heartbeats entirely.
+
+Already-existing toggles cover the rest of the matrix (unchanged): `Auto Capture Exceptions`,
+`Detect Unclean Shutdown`, `Auto Scene Breadcrumbs`, `Detect App Hangs`, `Upload Logs`, and
+the two screenshot toggles.
+
+### Added — `Tombstack.SetCaptureEnabled(TombstackCapture, bool)`
+Runtime override for five subsystems via the new simple enum
+`TombstackCapture { Exceptions, Heartbeats, Breadcrumbs, FrameStats, AppHangs }`:
+- **Exceptions** — detaches/reattaches the background hooks (unobserved Task / AppDomain) and
+  suppresses Unity-logged exception reports; manual `ReportException` always works.
+- **Heartbeats** — pauses/resumes the loop from its next tick (logs the same go-dark warning
+  when disabled).
+- **Breadcrumbs** — gates AUTOMATIC breadcrumbs (log lines + scene changes); manual
+  `AddBreadcrumb` and the session-log mirror are unaffected; buffered crumbs are kept.
+- **FrameStats** — stops/starts the sampler (a partial interval still drains on the next beat).
+- **AppHangs** — stops/starts the watchdog thread (re-enable no-ops when the configured
+  threshold is 0).
+
+Fail-silent like every public API; safe to call before `Init` (seeds the state Init starts
+with). Limitations are documented in the XML docs.
+
 ## [0.11.0] - 2026-07-03
 ### Added — per-session frame stats on heartbeats
 Every heartbeat now carries the frame statistics of the interval since the previous beat,

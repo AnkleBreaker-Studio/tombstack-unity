@@ -20,6 +20,27 @@ namespace AnkleBreaker.Tombstack
     }
 
     /// <summary>
+    /// Capture subsystems that can be toggled at runtime via
+    /// <see cref="Tombstack.SetCaptureEnabled(TombstackCapture, bool)"/>. A simple enum (not
+    /// [Flags]) — one call toggles one subsystem.
+    /// </summary>
+    public enum TombstackCapture
+    {
+        /// <summary>Automatic exception capture (Unity log, unobserved Tasks, AppDomain).
+        /// Manual <see cref="Tombstack.ReportException"/> always works regardless.</summary>
+        Exceptions,
+        /// <summary>The periodic session-heartbeat loop (CCU / sessions / crash-free %).</summary>
+        Heartbeats,
+        /// <summary>AUTOMATIC breadcrumbs (Unity log lines + scene changes). Manual
+        /// <see cref="Tombstack.AddBreadcrumb"/> always works regardless.</summary>
+        Breadcrumbs,
+        /// <summary>Per-heartbeat frame statistics sampling (fpsAvg / hitches / worst frame).</summary>
+        FrameStats,
+        /// <summary>The app-hang watchdog (tmb.app_hang events on main-thread stalls).</summary>
+        AppHangs,
+    }
+
+    /// <summary>
     /// Immutable snapshot of SDK state returned by <see cref="Tombstack.GetDiagnostics"/> (§K3) — for
     /// support overlays / dev HUDs. A value type: reading it allocates nothing beyond the struct itself.
     /// </summary>
@@ -152,7 +173,8 @@ namespace AnkleBreaker.Tombstack
         private static volatile bool _initialized;
         private static volatile bool _consent = true;
         // v0.5 autonomy toggles — default ON; overridden from TombstackConfigSO at auto-init.
-        private static bool _autoCaptureExceptions = true;
+        // Volatile: flipped by SetCaptureEnabled from anywhere while the threaded log handler reads it.
+        private static volatile bool _autoCaptureExceptions = true;
         // When false AND running in the Editor, AUTOMATIC exception capture is suppressed so in-Editor
         // testing doesn't spam reports. Default true (keeps prior behaviour); manual ReportException is
         // never affected, and shipped builds (not _isEditor) always capture.
@@ -169,8 +191,28 @@ namespace AnkleBreaker.Tombstack
         private static bool _autoRttMetric = true;        // §K1: auto tombstack.rtt_ms after each ingest POST
         private static bool _autoSceneBreadcrumbs = true; // §K2: auto breadcrumb on scene load / active change
         // v0.11 app-hang watchdog — default ON, 5s; overridden from TombstackConfigSO at auto-init.
-        private static bool _detectAppHangs = true;
+        // Volatile: flipped by SetCaptureEnabled from anywhere; read wherever the watchdog is (re)armed.
+        private static volatile bool _detectAppHangs = true;
         private static float _appHangThresholdSeconds = 5f;
+        // v0.12 granular capture toggles — default ON; overridden from TombstackConfigSO at
+        // auto-init and flippable at runtime via SetCaptureEnabled. Volatile: the heartbeat
+        // coroutine and per-frame pump read them while game code may toggle from anywhere.
+        private static volatile bool _sendHeartbeats = true;
+        private static volatile bool _collectFrameStats = true;
+        // Gates AUTOMATIC breadcrumbs only (log-line + scene crumbs); manual AddBreadcrumb is
+        // never affected. Runtime-only (SetCaptureEnabled) — no config field, scene crumbs
+        // already have AutoSceneBreadcrumbs.
+        private static volatile bool _autoBreadcrumbs = true;
+        // Per-category "game code overrode this at runtime" flags (indexed by TombstackCapture),
+        // set by SetCaptureEnabled. Auto-init applies a config value only when its category was
+        // NOT overridden, so a pre-init SetCaptureEnabled survives auto-init for ALL five
+        // categories (generalizes the Breadcrumbs survival pattern; same explicit-intent-wins
+        // precedent as _environmentExplicit).
+        private static readonly bool[] _captureOverridden = new bool[5];
+
+        /// <summary>Whether game code explicitly toggled this category via SetCaptureEnabled.</summary>
+        private static bool captureOverridden(TombstackCapture capture) =>
+            _captureOverridden[(int)capture];
         private static string _endpoint;
         private static string _gameToken;
         private static string _sessionId;
@@ -285,6 +327,15 @@ namespace AnkleBreaker.Tombstack
         /// <summary>§K1: whether the auto round-trip metric (tombstack.rtt_ms) is enabled (read by the upload host).</summary>
         internal static bool AutoRttMetricEnabled => _autoRttMetric;
 
+        /// <summary>v0.12: whether the heartbeat loop may send (config SendHeartbeats /
+        /// SetCaptureEnabled(Heartbeats)). Read each interval by the heartbeat coroutine, so a
+        /// runtime flip pauses/resumes the loop on its next tick.</summary>
+        internal static bool HeartbeatsEnabled => _sendHeartbeats;
+
+        /// <summary>v0.12: whether the per-frame stats sampler runs (config CollectFrameStats /
+        /// SetCaptureEnabled(FrameStats)). Read once per frame by TombstackBehaviour.Update.</summary>
+        internal static bool FrameStatsEnabled => _collectFrameStats;
+
         /// <summary>Effective app-hang watchdog threshold in seconds — 0 when detection is disabled
         /// (DetectAppHangs off, or a non-positive threshold). Read by TombstackBehaviour.Bootstrap;
         /// the watchdog clamps positive values to its 2s minimum.</summary>
@@ -372,7 +423,11 @@ namespace AnkleBreaker.Tombstack
                 if (config == null || !config.AutoInitOnLoad) return;
                 // When consent is required, start disabled until the game calls SetConsent(true).
                 _consent = !config.RequireConsent;
-                _autoCaptureExceptions = config.AutoCaptureExceptions;
+                // Config values apply only where game code has NOT already called
+                // SetCaptureEnabled for that category — an explicit runtime override (even one
+                // made before auto-init runs) always wins over the config asset.
+                if (!captureOverridden(TombstackCapture.Exceptions))
+                    _autoCaptureExceptions = config.AutoCaptureExceptions;
                 _uploadLogs = config.UploadLogs;
                 _detectUncleanShutdown = config.DetectUncleanShutdown;
                 _captureScreenshotOnBugReport = config.CaptureScreenshotOnBugReport;
@@ -380,9 +435,19 @@ namespace AnkleBreaker.Tombstack
                 _screenshotMaxDimension = config.ScreenshotMaxDimension;
                 _exceptionScreenshotThrottleSeconds = config.ExceptionScreenshotThrottleSeconds;
                 _autoRttMetric = config.AutoRttMetric;
+                // The scene-crumb config toggle stays overridable by the Breadcrumbs category:
+                // a pre-init SetCaptureEnabled(Breadcrumbs, false) already survives via
+                // _autoBreadcrumbs (never written here) — AutoSceneBreadcrumbs only narrows it.
                 _autoSceneBreadcrumbs = config.AutoSceneBreadcrumbs;
-                _detectAppHangs = config.DetectAppHangs;
+                if (!captureOverridden(TombstackCapture.AppHangs)) _detectAppHangs = config.DetectAppHangs;
                 _appHangThresholdSeconds = config.AppHangThresholdSeconds;
+                if (!captureOverridden(TombstackCapture.Heartbeats)) _sendHeartbeats = config.SendHeartbeats;
+                if (!captureOverridden(TombstackCapture.FrameStats)) _collectFrameStats = config.CollectFrameStats;
+                // Heartbeats off is a LOUD choice: every session-derived feature goes dark.
+                if (!_sendHeartbeats)
+                    TombstackLog.Warn(
+                        "SendHeartbeats is OFF — live CCU, sessions, crash-free %, releases, fleet " +
+                        "liveness, user metadata, and server-triggered log pulls will not work.");
                 _sendExceptionsInEditor = config.SendExceptionsInEditor; // read before Init so the hook-registration gate sees it
                 Init(config.GameToken, config.Endpoint, config.HeartbeatIntervalSeconds, config.Environment);
             }
@@ -448,7 +513,9 @@ namespace AnkleBreaker.Tombstack
                 Application.quitting += onQuitting;
 
                 TombstackBehaviour.Bootstrap(_endpoint, _gameToken, _sessionId, heartbeatIntervalSeconds);
-                if (_autoSceneBreadcrumbs) hookSceneBreadcrumbs();
+                // Both gates: the config toggle AND the runtime auto-breadcrumb switch (a
+                // pre-init SetCaptureEnabled(Breadcrumbs, false) must survive Init).
+                if (_autoSceneBreadcrumbs && _autoBreadcrumbs) hookSceneBreadcrumbs();
                 if (CaptureAllowed) startSessionTracking();
                 // Ship anything TrackEvent/TrackMetric buffered before init (original timestamps).
                 replayPreInitTracks();
@@ -752,6 +819,78 @@ namespace AnkleBreaker.Tombstack
             catch (Exception e)
             {
                 TombstackLog.Warn($"SetConsent follow-up failed: {e.Message}");
+            }
+        }
+
+        /// <summary>
+        /// v0.12: enable/disable one capture subsystem at runtime — a finer-grained override of the
+        /// config-asset toggles. Fail-silent and idempotent; safe before or after <see cref="Init"/>
+        /// (a pre-init call just seeds the state Init starts with). Per-subsystem behaviour and limits:
+        /// <list type="bullet">
+        /// <item><see cref="TombstackCapture.Exceptions"/> — gates AUTOMATIC capture: the background
+        /// hooks (unobserved Task / AppDomain) are detached/reattached and Unity-logged exceptions stop
+        /// reporting. Manual <see cref="ReportException"/> always works. In the Editor the
+        /// SendExceptionsInEditor config gate still applies on re-enable.</item>
+        /// <item><see cref="TombstackCapture.Heartbeats"/> — pauses/resumes the heartbeat loop from its
+        /// next tick (an in-flight beat is not cancelled). WARNING: while off, live CCU, sessions,
+        /// crash-free %, fleet liveness, user metadata, and server log pulls all go dark.</item>
+        /// <item><see cref="TombstackCapture.Breadcrumbs"/> — gates AUTOMATIC breadcrumbs (Unity log
+        /// lines + scene changes). Manual <see cref="AddBreadcrumb"/> and the session-log mirror are
+        /// unaffected; already-buffered crumbs are kept (call <see cref="SetConsent"/>(false) to purge).</item>
+        /// <item><see cref="TombstackCapture.FrameStats"/> — stops/starts the per-frame sampler; a
+        /// partially-accumulated interval still drains on the next heartbeat.</item>
+        /// <item><see cref="TombstackCapture.AppHangs"/> — stops/starts the watchdog thread. Re-enable
+        /// is a no-op when the configured threshold is 0 (detection disabled by config).</item>
+        /// </list>
+        /// </summary>
+        /// <param name="capture">The subsystem to toggle.</param>
+        /// <param name="enabled">True to (re-)enable, false to disable.</param>
+        public static void SetCaptureEnabled(TombstackCapture capture, bool enabled)
+        {
+            try
+            {
+                // Record the explicit game-code intent FIRST: a later auto-init must not clobber
+                // this category back to the config asset's value (mirrors _environmentExplicit).
+                _captureOverridden[(int)capture] = true;
+                switch (capture)
+                {
+                    case TombstackCapture.Exceptions:
+                        _autoCaptureExceptions = enabled;
+                        // Mirror Init's registration gate: hooks only attach post-init, and an
+                        // Editor session that opted out of in-Editor reporting stays unhooked.
+                        if (!enabled) unhookBackgroundExceptionSources();
+                        else if (_initialized && (!_isEditor || _sendExceptionsInEditor))
+                            hookBackgroundExceptionSources();
+                        break;
+                    case TombstackCapture.Heartbeats:
+                        _sendHeartbeats = enabled;
+                        if (!enabled)
+                            TombstackLog.Warn(
+                                "heartbeats disabled at runtime — live CCU, sessions, crash-free %, " +
+                                "fleet liveness, user metadata, and server-triggered log pulls go dark.");
+                        break;
+                    case TombstackCapture.Breadcrumbs:
+                        _autoBreadcrumbs = enabled;
+                        if (!enabled) unhookSceneBreadcrumbs();
+                        // Re-hook only what config says should be hooked (AutoSceneBreadcrumbs).
+                        else if (_initialized && _autoSceneBreadcrumbs) hookSceneBreadcrumbs();
+                        break;
+                    case TombstackCapture.FrameStats:
+                        _collectFrameStats = enabled;
+                        break;
+                    case TombstackCapture.AppHangs:
+                        _detectAppHangs = enabled;
+                        // Fire-and-forget stop: never block the caller's (game) thread on a
+                        // watchdog join — the full bounded join is reserved for the quit path.
+                        if (!enabled) TombstackAppHang.Stop(waitForExit: false);
+                        // Start() no-ops on a <=0 threshold (config-disabled) and when already running.
+                        else if (_initialized) TombstackAppHang.Start(AppHangThresholdSeconds);
+                        break;
+                }
+            }
+            catch (Exception e)
+            {
+                TombstackLog.Warn($"SetCaptureEnabled failed: {e.Message}");
             }
         }
 
@@ -1331,8 +1470,11 @@ namespace AnkleBreaker.Tombstack
 
                 if (type != LogType.Exception)
                 {
-                    // Every non-fatal log becomes a breadcrumb.
-                    recordBreadcrumb(truncate(condition, MAX_BREADCRUMB_MESSAGE), logTypeName(type));
+                    // Every non-fatal log becomes a breadcrumb — unless automatic breadcrumbs
+                    // were disabled at runtime (SetCaptureEnabled(Breadcrumbs, false)). The
+                    // session-log mirror above is unaffected either way.
+                    if (_autoBreadcrumbs)
+                        recordBreadcrumb(truncate(condition, MAX_BREADCRUMB_MESSAGE), logTypeName(type));
                     return;
                 }
 
@@ -1453,13 +1595,34 @@ namespace AnkleBreaker.Tombstack
             return true;
         }
 
+        // True while the background exception hooks are subscribed (SetCaptureEnabled toggling).
+        private static bool _backgroundHooksInstalled;
+
         /// <summary>Capture exceptions Unity's log dispatch can miss: unobserved Task faults
         /// and raw AppDomain unhandled exceptions. Doubles with the Unity log path collapse
-        /// via the dedupe window client-side and the canonical stack signature server-side.</summary>
+        /// via the dedupe window client-side and the canonical stack signature server-side.
+        /// Idempotent (guarded) so a SetCaptureEnabled re-enable can never double-subscribe.</summary>
         private static void hookBackgroundExceptionSources()
         {
+            if (_backgroundHooksInstalled) return;
             TaskScheduler.UnobservedTaskException += onUnobservedTaskException;
             AppDomain.CurrentDomain.UnhandledException += onUnhandledException;
+            _backgroundHooksInstalled = true;
+        }
+
+        /// <summary>Detach the background exception hooks (SetCaptureEnabled(Exceptions, false)).
+        /// The Unity log hook stays attached — it also feeds breadcrumbs and the session log —
+        /// and handleLog's _autoCaptureExceptions gate suppresses the report instead.</summary>
+        private static void unhookBackgroundExceptionSources()
+        {
+            if (!_backgroundHooksInstalled) return;
+            try
+            {
+                TaskScheduler.UnobservedTaskException -= onUnobservedTaskException;
+                AppDomain.CurrentDomain.UnhandledException -= onUnhandledException;
+            }
+            catch { /* toggle path must never throw */ }
+            _backgroundHooksInstalled = false;
         }
 
         private static void onUnobservedTaskException(object sender, UnobservedTaskExceptionEventArgs e)

@@ -26,6 +26,12 @@ namespace AnkleBreaker.Tombstack
         [Tooltip("Seconds between session heartbeats (used for CCU billing + crash rate).")]
         [SerializeField] private float _heartbeatIntervalSeconds = 60f;
 
+        [Tooltip("Send periodic session heartbeats. WARNING: turning this OFF blanks live CCU, sessions, crash-free %, releases, fleet liveness, user-metadata delivery, and server-triggered log pulls — the SDK logs a warning at init when disabled.")]
+        [SerializeField] private bool _sendHeartbeats = true;
+
+        [Tooltip("Collect per-heartbeat frame statistics (fpsAvg / slowFramePct / hitchCount / worstFrameMs, sampled allocation-free each frame). OFF omits the frame fields from heartbeats entirely.")]
+        [SerializeField] private bool _collectFrameStats = true;
+
         [Tooltip("Deployment environment stamped on all telemetry (e.g. \"production\", \"development\"). Feeds the dashboard environment filter. Leave as \"production\" unless this build targets a non-prod environment.")]
         [SerializeField] private string _environment = "production";
 
@@ -70,6 +76,8 @@ namespace AnkleBreaker.Tombstack
         public bool AutoInitOnLoad => _autoInitOnLoad;
         public bool RequireConsent => _requireConsent;
         public float HeartbeatIntervalSeconds => _heartbeatIntervalSeconds;
+        public bool SendHeartbeats => _sendHeartbeats;
+        public bool CollectFrameStats => _collectFrameStats;
         public string Environment => _environment;
         public bool AutoCaptureExceptions => _autoCaptureExceptions;
         public bool UploadLogs => _uploadLogs;

@@ -10,11 +10,11 @@ your Tombstack account. Requires **Unity 6 (6000.0)** or newer.
 
 ### 1. Install
 
-- **Tarball (recommended):** download `com.anklebreaker.tombstack-0.11.0.tgz` from
-  `https://tombstack.com/downloads/com.anklebreaker.tombstack-0.11.0.tgz`, then
+- **Tarball (recommended):** download `com.anklebreaker.tombstack-0.12.0.tgz` from
+  `https://tombstack.com/downloads/com.anklebreaker.tombstack-0.12.0.tgz`, then
   Package Manager ▸ `+` ▸ *Add package from tarball…*
 - Or Package Manager ▸ `+` ▸ *Add package from git URL…* →
-  `https://github.com/AnkleBreaker-Studio/tombstack-unity.git#v0.11.0`
+  `https://github.com/AnkleBreaker-Studio/tombstack-unity.git#v0.12.0`
 
 ### 2. Sign in (mandatory)
 
@@ -85,8 +85,13 @@ Manual one-liners: `SetUser`, `TrackEvent`, `ReportBug` (now attaches the sessio
 `AddBreadcrumb`, `ReportException`.
 
 Toggles on the `TombstackConfig` asset control the autonomy systems (all default ON):
-*Auto Capture Exceptions*, *Upload Logs*, *Detect Unclean Shutdown*, *Detect App Hangs*
-(with *App Hang Threshold Seconds*, default 5). All are consent-gated —
+*Auto Capture Exceptions*, *Upload Logs*, *Detect Unclean Shutdown*, *Auto Scene
+Breadcrumbs*, *Send Heartbeats* (0.12+ — OFF logs a warning: live CCU, sessions,
+crash-free %, fleet, user metadata, and log pulls go dark), *Collect Frame Stats* (0.12+),
+*Detect App Hangs* (with *App Hang Threshold Seconds*, default 5), and the two screenshot
+toggles. At runtime, `Tombstack.SetCaptureEnabled(TombstackCapture.X, bool)` (0.12+) flips
+*Exceptions* / *Heartbeats* / *Breadcrumbs* / *FrameStats* / *AppHangs* live — manual
+`ReportException` and `AddBreadcrumb` always work regardless. All are consent-gated —
 with *Require consent* enabled, nothing is captured, mirrored, or reported until your game
 calls `Tombstack.SetConsent(true)`.
 
@@ -123,6 +128,7 @@ Tombstack.SetEnvironment(environment);                           // production /
 Tombstack.TrackEvent(name, Dictionary<string,string> props = null);
 Tombstack.TrackMetric(name, double value, string unit = null);
 Tombstack.SetSampleRate(name, float rate0to1);                   // per-name keep-probability
+Tombstack.SetCaptureEnabled(TombstackCapture capture, bool on);  // 0.12+: toggle a subsystem at runtime
 Tombstack.AddBreadcrumb(message, BreadcrumbLevel level = Info, category = null);
 Tombstack.ReportException(exception);
 Tombstack.ReportBug(message, category = null);

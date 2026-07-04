@@ -27,7 +27,10 @@ namespace AnkleBreaker.Tombstack
         private const float REPORT_COOLDOWN_SECONDS = 60f;
 
         private static Thread _watchdog;
-        private static volatile bool _running;
+        // Stop token: each watchdog thread captures the generation it was started with and exits
+        // as soon as Stop() bumps it. A generation (not a shared bool) so a fast disable→re-enable
+        // can never revive an OLD thread's loop — its captured value stays stale forever.
+        private static volatile int _generation;
         // App backgrounded (OnApplicationPause): frames legitimately stop — never a hang.
         private static volatile bool _paused;
         // Incremented by the main thread each frame; read by the watchdog to detect stalls.
@@ -50,8 +53,8 @@ namespace AnkleBreaker.Tombstack
             {
                 if (_watchdog != null || thresholdSeconds <= 0f) return;
                 _thresholdSeconds = Mathf.Max(MIN_THRESHOLD_SECONDS, thresholdSeconds);
-                _running = true;
-                _watchdog = new Thread(watch) { IsBackground = true, Name = "Tombstack-AppHang" };
+                int generation = _generation; // the new thread exits when Stop() bumps past this
+                _watchdog = new Thread(() => watch(generation)) { IsBackground = true, Name = "Tombstack-AppHang" };
                 _watchdog.Start();
             }
             catch (Exception e)
@@ -60,15 +63,24 @@ namespace AnkleBreaker.Tombstack
             }
         }
 
-        /// <summary>Stop and join the watchdog (quit path — bounded join, never throws).</summary>
-        internal static void Stop()
+        /// <summary>
+        /// Stop the watchdog. Never throws. With <paramref name="waitForExit"/> true (the
+        /// application-quit path) this JOINS the thread (bounded to <see cref="STOP_JOIN_TIMEOUT_MS"/>)
+        /// so teardown is deterministic; with false (a runtime
+        /// <c>Tombstack.SetCaptureEnabled(AppHangs, false)</c>) it only flips the stop token and
+        /// returns immediately — the game thread must never block on a watchdog join. The orphaned
+        /// thread notices the bumped generation within one 500ms poll and exits on its own (it is
+        /// IsBackground, so even a missed exit can never keep the process alive).
+        /// </summary>
+        /// <param name="waitForExit">True to join (quit path); false for fire-and-forget stop.</param>
+        internal static void Stop(bool waitForExit = true)
         {
             try
             {
-                _running = false;
+                _generation++; // single-writer (main thread): signals every prior watchdog to exit
                 var thread = _watchdog;
                 _watchdog = null;
-                if (thread != null && thread.IsAlive) thread.Join(STOP_JOIN_TIMEOUT_MS);
+                if (waitForExit && thread != null && thread.IsAlive) thread.Join(STOP_JOIN_TIMEOUT_MS);
             }
             catch { /* quit path must never throw */ }
         }
@@ -114,14 +126,14 @@ namespace AnkleBreaker.Tombstack
         /// <summary>Watchdog body: sleep 500ms per check; when the pulse hasn't moved for longer
         /// than the threshold (and the app is not paused), stamp the stall ONCE and let the main
         /// thread report it on resume. Wrapped whole — a watchdog must never take the app down.</summary>
-        private static void watch()
+        private static void watch(int generation)
         {
             try
             {
                 int lastPulse = _pulse;
                 double lastPumpAtSeconds = monotonic();
                 bool stallSignalled = false;
-                while (_running)
+                while (generation == _generation)
                 {
                     Thread.Sleep(POLL_INTERVAL_MS);
                     int pulse = _pulse;

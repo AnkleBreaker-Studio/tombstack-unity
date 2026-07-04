@@ -34,24 +34,36 @@ cases with **zero further integration**:
 | Server-triggered log pull — client honouring | ✅ Automatic | The heartbeat ack carries pull requests; a **consenting**, **targeted** client uploads its rolling session log via the existing presigned-log path, off-thread. A non-consenting client never uploads. |
 | Server-side log pull (request a player's logs) | One-liner | `Tombstack.RequestPlayerLogs(...)` / `Tombstack.OnAnomalousDisconnect(userId, reason)` (write-scoped server token) |
 
-The autonomy systems can be toggled on the config asset (`Auto Capture Exceptions`,
-`Upload Logs`, `Detect Unclean Shutdown`, and 0.11's `Detect App Hangs` +
-`App Hang Threshold Seconds` — default ON / 5s, min 2s, 0 disables) and are consent-gated:
-with *Require Consent* enabled, nothing is captured, mirrored, or reported until
-`Tombstack.SetConsent(true)`.
+Every autonomy system has its own toggle on the config asset — all default ON:
+
+| Toggle | Gates |
+|---|---|
+| `Auto Capture Exceptions` | Automatic exception capture (Unity log + unobserved Task + AppDomain); manual `ReportException` always works |
+| `Upload Logs` | The rolling session log + its crash/bug uploads |
+| `Detect Unclean Shutdown` | The session-marker dirty-session detection on next launch |
+| `Auto Scene Breadcrumbs` | Automatic breadcrumbs on scene load / active-scene change |
+| `Send Heartbeats` (0.12+) | The heartbeat loop — **OFF logs a warning: live CCU, sessions, crash-free %, fleet, user metadata, and log pulls go dark** |
+| `Collect Frame Stats` (0.12+) | The per-heartbeat frame-stats sampler (`fpsAvg` / `slowFramePct` / `hitchCount` / `worstFrameMs`) |
+| `Detect App Hangs` + `App Hang Threshold Seconds` | The app-hang watchdog (default 5s, min 2s, 0 disables) |
+| `Capture Screenshot On Bug Report` / `On Exception` | The two screenshot auto-captures |
+
+At runtime, `Tombstack.SetCaptureEnabled(TombstackCapture.X, bool)` (0.12+) flips
+`Exceptions` / `Heartbeats` / `Breadcrumbs` / `FrameStats` / `AppHangs` live. Everything is
+additionally consent-gated: with *Require Consent* enabled, nothing is captured, mirrored, or
+reported until `Tombstack.SetConsent(true)`.
 
 ## Install
 
 **Via UPM git URL** (public mirror) — Window ▸ Package Manager ▸ `+` ▸ *Add package from git URL…*:
 
 ```
-https://github.com/AnkleBreaker-Studio/tombstack-unity.git#v0.11.0
+https://github.com/AnkleBreaker-Studio/tombstack-unity.git#v0.12.0
 ```
 
 Or add to `Packages/manifest.json`:
 
 ```jsonc
-{ "dependencies": { "com.anklebreaker.tombstack": "https://github.com/AnkleBreaker-Studio/tombstack-unity.git#v0.11.0" } }
+{ "dependencies": { "com.anklebreaker.tombstack": "https://github.com/AnkleBreaker-Studio/tombstack-unity.git#v0.12.0" } }
 ```
 
 Or copy `unity/` into your project's `Packages/`. Requires Unity **6 (6000.0)+** (Mono and IL2CPP).
@@ -195,6 +207,13 @@ Tombstack.SetConsent(bool granted);
 Tombstack.TrackEvent(name, Dictionary<string,string> props = null);
 Tombstack.TrackMetric(name, double value, string unit = null);
 Tombstack.SetSampleRate(name, float rate0to1);   // per-name keep-probability for events/metrics
+
+// Granular capture toggles (0.12.0+) — runtime override of the config-asset toggles.
+// Exceptions: detaches/reattaches auto-capture (manual ReportException always works);
+// Heartbeats: pauses/resumes the loop (CCU/session features go dark while off);
+// Breadcrumbs: gates AUTOMATIC crumbs only (manual AddBreadcrumb always works);
+// FrameStats / AppHangs: stop/start the sampler / watchdog. Fail-silent, pre-Init-safe.
+Tombstack.SetCaptureEnabled(TombstackCapture capture, bool enabled);
 
 // Standard event taxonomy (0.10.0+) — typed wrappers over TrackEvent that emit reserved tmb.*
 // names (plain custom events underneath: batching / pre-init buffering / consent / sampling all

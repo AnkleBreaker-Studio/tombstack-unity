@@ -247,7 +247,8 @@ namespace AnkleBreaker.Tombstack
             {
                 // 0.11 per-frame pumps, both allocation-free: frame-stats accumulation (drained by
                 // the next heartbeat) and the app-hang pulse (watched by the background watchdog).
-                TombstackFrameStats.Sample(Time.unscaledDeltaTime);
+                // 0.12: the sampler is gated (config CollectFrameStats / SetCaptureEnabled(FrameStats)).
+                if (Tombstack.FrameStatsEnabled) TombstackFrameStats.Sample(Time.unscaledDeltaTime);
                 TombstackAppHang.Pump();
                 while (_inFlight < MAX_CONCURRENT_UPLOADS && _outbound.TryDequeue(out var item))
                 {
@@ -339,7 +340,9 @@ namespace AnkleBreaker.Tombstack
             while (true)
             {
                 // Consent-gated like every other capture; resumes when SetConsent(true) is called.
-                if (Tombstack.CaptureAllowed)
+                // 0.12: also gated by SendHeartbeats / SetCaptureEnabled(Heartbeats) — checked every
+                // interval so a runtime flip pauses/resumes the loop on its next tick.
+                if (Tombstack.CaptureAllowed && Tombstack.HeartbeatsEnabled)
                 {
                     var json = buildHeartbeatJson(out var pendingMetadataJson, out var metadataEpoch);
                     if (json != null)
