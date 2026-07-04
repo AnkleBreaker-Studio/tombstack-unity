@@ -37,9 +37,12 @@
             <uie:FloatField name="set-heartbeat" label="HEARTBEAT (S)" />
             <ui:Toggle name="set-consent" label="REQUIRE CONSENT" />
             <ui:Toggle name="set-send-exceptions-editor" label="SEND EXCEPTIONS IN EDITOR" />
+            <ui:Toggle name="set-send-heartbeats" label="SEND SESSION HEARTBEATS (CCU / SESSIONS)" />
+            <ui:Toggle name="set-collect-frame-stats" label="COLLECT FRAME STATS (FPS / HITCHES)" />
             <ui:TextField name="set-environment" label="ENVIRONMENT" />
             <ui:Label text="Deployment label this build reports under (production / staging / development / …). The dashboard filters every page by it. Defaults to production; press Enter to apply." class="tmb-dim" style="margin-top: 4px;" />
             <ui:Label text="When off, automatically-caught exceptions are not reported while you play in the Editor. Manual Tombstack.ReportException and shipped builds are unaffected." class="tmb-dim" style="margin-top: 4px;" />
+            <ui:Label text="When heartbeats are off, live CCU, sessions, crash-free % and release health stay empty for this build. When frame stats are off, FPS / hitch metrics are not collected." class="tmb-dim" style="margin-top: 4px;" />
         </ui:VisualElement>
     </ui:VisualElement>
 </ui:UXML>

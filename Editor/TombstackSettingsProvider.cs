@@ -22,6 +22,8 @@ namespace AnkleBreaker.Tombstack.Editor
         private static FloatField _heartbeatField;
         private static Toggle _consentToggle;
         private static Toggle _sendExceptionsEditorToggle;
+        private static Toggle _sendHeartbeatsToggle;
+        private static Toggle _collectFrameStatsToggle;
         private static TextField _environmentField;
         private static Button _signOutButton;
         private static Button _unlinkButton;
@@ -52,6 +54,8 @@ namespace AnkleBreaker.Tombstack.Editor
             _heartbeatField = rootElement.Q<FloatField>("set-heartbeat");
             _consentToggle = rootElement.Q<Toggle>("set-consent");
             _sendExceptionsEditorToggle = rootElement.Q<Toggle>("set-send-exceptions-editor");
+            _sendHeartbeatsToggle = rootElement.Q<Toggle>("set-send-heartbeats");
+            _collectFrameStatsToggle = rootElement.Q<Toggle>("set-collect-frame-stats");
             _environmentField = rootElement.Q<TextField>("set-environment");
             // Commit on Enter/blur, not per keystroke — the writer normalizes (empty → "production"),
             // which would fight the user mid-typing otherwise.
@@ -67,6 +71,8 @@ namespace AnkleBreaker.Tombstack.Editor
             _heartbeatField?.RegisterValueChangedCallback(onHeartbeatChanged);
             _consentToggle?.RegisterValueChangedCallback(onConsentChanged);
             _sendExceptionsEditorToggle?.RegisterValueChangedCallback(onSendExceptionsEditorChanged);
+            _sendHeartbeatsToggle?.RegisterValueChangedCallback(onSendHeartbeatsChanged);
+            _collectFrameStatsToggle?.RegisterValueChangedCallback(onCollectFrameStatsChanged);
             _environmentField?.RegisterValueChangedCallback(onEnvironmentChanged);
             _signOutButton?.RegisterCallback<ClickEvent>(onSignOutClicked);
             _unlinkButton?.RegisterCallback<ClickEvent>(onUnlinkClicked);
@@ -83,6 +89,8 @@ namespace AnkleBreaker.Tombstack.Editor
             _heartbeatField?.UnregisterValueChangedCallback(onHeartbeatChanged);
             _consentToggle?.UnregisterValueChangedCallback(onConsentChanged);
             _sendExceptionsEditorToggle?.UnregisterValueChangedCallback(onSendExceptionsEditorChanged);
+            _sendHeartbeatsToggle?.UnregisterValueChangedCallback(onSendHeartbeatsChanged);
+            _collectFrameStatsToggle?.UnregisterValueChangedCallback(onCollectFrameStatsChanged);
             _environmentField?.UnregisterValueChangedCallback(onEnvironmentChanged);
             _signOutButton?.UnregisterCallback<ClickEvent>(onSignOutClicked);
             _unlinkButton?.UnregisterCallback<ClickEvent>(onUnlinkClicked);
@@ -92,6 +100,8 @@ namespace AnkleBreaker.Tombstack.Editor
             _heartbeatField = null;
             _consentToggle = null;
             _sendExceptionsEditorToggle = null;
+            _sendHeartbeatsToggle = null;
+            _collectFrameStatsToggle = null;
             _environmentField = null;
             _signOutButton = null;
             _unlinkButton = null;
@@ -119,12 +129,16 @@ namespace AnkleBreaker.Tombstack.Editor
             _heartbeatField?.SetEnabled(hasConfig);
             _consentToggle?.SetEnabled(hasConfig);
             _sendExceptionsEditorToggle?.SetEnabled(hasConfig);
+            _sendHeartbeatsToggle?.SetEnabled(hasConfig);
+            _collectFrameStatsToggle?.SetEnabled(hasConfig);
             _environmentField?.SetEnabled(hasConfig);
             if (hasConfig)
             {
                 _heartbeatField?.SetValueWithoutNotify(config.HeartbeatIntervalSeconds);
                 _consentToggle?.SetValueWithoutNotify(config.RequireConsent);
                 _sendExceptionsEditorToggle?.SetValueWithoutNotify(config.SendExceptionsInEditor);
+                _sendHeartbeatsToggle?.SetValueWithoutNotify(config.SendHeartbeats);
+                _collectFrameStatsToggle?.SetValueWithoutNotify(config.CollectFrameStats);
                 _environmentField?.SetValueWithoutNotify(config.Environment);
                 showStatus(null);
             }
@@ -148,6 +162,12 @@ namespace AnkleBreaker.Tombstack.Editor
 
         private static void onSendExceptionsEditorChanged(ChangeEvent<bool> evt)
             => TombstackConfigWriter.WriteSendExceptionsInEditor(evt.newValue);
+
+        private static void onSendHeartbeatsChanged(ChangeEvent<bool> evt)
+            => TombstackConfigWriter.WriteSendHeartbeats(evt.newValue);
+
+        private static void onCollectFrameStatsChanged(ChangeEvent<bool> evt)
+            => TombstackConfigWriter.WriteCollectFrameStats(evt.newValue);
 
         private static void onEnvironmentChanged(ChangeEvent<string> evt)
         {

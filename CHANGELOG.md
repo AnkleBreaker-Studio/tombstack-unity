@@ -2,6 +2,12 @@
 
 All notable changes to `com.anklebreaker.tombstack`.
 
+## [0.14.1] - 2026-07-04
+### Fixed — editor settings expose the 0.12 capture toggles
+The in-editor Tombstack settings panel now surfaces the `Send Heartbeats` and
+`Collect Frame Stats` toggles added to the config asset in 0.12.0 (previously only editable
+via the asset's default inspector). No runtime behavior change.
+
 ## [0.14.0] - 2026-07-04
 ### Added — device specs on the first heartbeat (player hardware profiles)
 The Init-time device snapshot (model, CPU, cores, RAM, GPU, VRAM, display, engine — the same

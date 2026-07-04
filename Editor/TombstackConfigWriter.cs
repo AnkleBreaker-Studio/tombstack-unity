@@ -20,6 +20,8 @@ namespace AnkleBreaker.Tombstack.Editor
         private const string PROP_HEARTBEAT = "_heartbeatIntervalSeconds";
         private const string PROP_REQUIRE_CONSENT = "_requireConsent";
         private const string PROP_SEND_EXCEPTIONS_IN_EDITOR = "_sendExceptionsInEditor";
+        private const string PROP_SEND_HEARTBEATS = "_sendHeartbeats";
+        private const string PROP_COLLECT_FRAME_STATS = "_collectFrameStats";
         private const string PROP_ENVIRONMENT = "_environment";
         private const string TOKEN_PREFIX = "tmb_";
         private const string TOKEN_PLACEHOLDER = "tmb_REPLACE_ME";
@@ -104,6 +106,20 @@ namespace AnkleBreaker.Tombstack.Editor
         public static void WriteSendExceptionsInEditor(bool send)
         {
             writeProperty(so => so.FindProperty(PROP_SEND_EXCEPTIONS_IN_EDITOR).boolValue = send);
+        }
+
+        /// <summary>Toggle whether the SDK sends session heartbeats (CCU / sessions / crash-free %).</summary>
+        /// <param name="send">True (default) to send heartbeats; false disables the heartbeat loop for shipped builds.</param>
+        public static void WriteSendHeartbeats(bool send)
+        {
+            writeProperty(so => so.FindProperty(PROP_SEND_HEARTBEATS).boolValue = send);
+        }
+
+        /// <summary>Toggle whether the SDK samples per-frame stats (FPS distributions / hitches).</summary>
+        /// <param name="collect">True (default) to run the frame-stats sampler; false disables it.</param>
+        public static void WriteCollectFrameStats(bool collect)
+        {
+            writeProperty(so => so.FindProperty(PROP_COLLECT_FRAME_STATS).boolValue = collect);
         }
 
         /// <summary>
