@@ -2,6 +2,18 @@
 
 All notable changes to `com.anklebreaker.tombstack`.
 
+## [0.15.0] - 2026-07-06
+### Added — `StartSession()` so the first beat carries the player's identity + environment
+By default the SDK began sending the first heartbeat the instant it initialized — **anonymous, in the
+`production` environment** — before the game could call `SetUser` / `SetEnvironment` /
+`SetUserMetadata`, so that first beat (and its once-per-session device snapshot) was mis-attributed.
+New `Tombstack.StartSession()` is an explicit "start collecting" latch: until it is called, heartbeats
+and event/metric batches are held (crash and bug reports still send). It **auto-fires at `Init` by
+default**, so existing zero-code and manual-`Init` integrations are unchanged. To defer the first beat
+until you've configured the player: set the config asset's **Auto Start Session** to false (or call
+`Init(..., autoStartSession: false)`), then `SetEnvironment` / `SetUser` / `SetUserMetadata`, then
+`Tombstack.StartSession()`. Idempotent; may be called before `Init` (the latch survives).
+
 ## [0.14.1] - 2026-07-04
 ### Fixed — editor settings expose the 0.12 capture toggles
 The in-editor Tombstack settings panel now surfaces the `Send Heartbeats` and

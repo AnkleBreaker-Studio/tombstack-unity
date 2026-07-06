@@ -23,6 +23,9 @@ namespace AnkleBreaker.Tombstack
         [Tooltip("Require explicit consent (Tombstack.SetConsent(true)) before any capture/upload.")]
         [SerializeField] private bool _requireConsent = false;
 
+        [Tooltip("Start sending telemetry automatically at Init (default). Turn OFF to defer the first heartbeat until the game calls Tombstack.StartSession() — call that AFTER SetUser/SetEnvironment/SetUserMetadata so the first beat carries the player's identity + environment instead of anonymous + production. Crash/bug reports still send while deferred.")]
+        [SerializeField] private bool _autoStartSession = true;
+
         [Tooltip("Seconds between session heartbeats (used for CCU billing + crash rate).")]
         [SerializeField] private float _heartbeatIntervalSeconds = 60f;
 
@@ -75,6 +78,7 @@ namespace AnkleBreaker.Tombstack
         public string GameToken => _gameToken;
         public bool AutoInitOnLoad => _autoInitOnLoad;
         public bool RequireConsent => _requireConsent;
+        public bool AutoStartSession => _autoStartSession;
         public float HeartbeatIntervalSeconds => _heartbeatIntervalSeconds;
         public bool SendHeartbeats => _sendHeartbeats;
         public bool CollectFrameStats => _collectFrameStats;

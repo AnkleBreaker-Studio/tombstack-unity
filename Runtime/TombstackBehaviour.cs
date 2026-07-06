@@ -228,6 +228,10 @@ namespace AnkleBreaker.Tombstack
         /// single-event path it replaces (retried in-session, persisted only after the final failure).</summary>
         private static void flushOne(TombstackBatch batch, string path)
         {
+            // Hold event/metric batches until the game has begun collecting (StartSession() / Init
+            // auto-start) — nothing ships before identity/environment are configured. Crash/bug
+            // reports bypass this (they enqueueOutbound directly), so a startup crash still sends.
+            if (!Tombstack.CollectingStarted) return;
             if (!batch.HasItems) return;
             var envelope = batch.DrainEnvelope(DateTime.UtcNow.ToString("yyyy-MM-ddTHH:mm:ss.fffZ"));
             if (envelope == null) return;
@@ -342,7 +346,7 @@ namespace AnkleBreaker.Tombstack
                 // Consent-gated like every other capture; resumes when SetConsent(true) is called.
                 // 0.12: also gated by SendHeartbeats / SetCaptureEnabled(Heartbeats) — checked every
                 // interval so a runtime flip pauses/resumes the loop on its next tick.
-                if (Tombstack.CaptureAllowed && Tombstack.HeartbeatsEnabled)
+                if (Tombstack.CaptureAllowed && Tombstack.HeartbeatsEnabled && Tombstack.CollectingStarted)
                 {
                     var json = buildHeartbeatJson(out var pendingMetadataJson, out var metadataEpoch, out var carriedDevice);
                     if (json != null)

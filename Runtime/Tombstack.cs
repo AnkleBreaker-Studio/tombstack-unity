@@ -172,6 +172,11 @@ namespace AnkleBreaker.Tombstack
 
         private static volatile bool _initialized;
         private static volatile bool _consent = true;
+        // v0.15: send gate — the SDK sends NOTHING (heartbeats + event/metric batches) until the game
+        // calls StartSession() or Init auto-starts it. Lets the game set user identity / environment /
+        // metadata FIRST so the first heartbeat isn't anonymous + production. One-way latch (never
+        // un-set); crash/bug reports are exempt (a crash during startup must never be dropped).
+        private static volatile bool _collectingStarted;
         // v0.5 autonomy toggles — default ON; overridden from TombstackConfigSO at auto-init.
         // Volatile: flipped by SetCaptureEnabled from anywhere while the threaded log handler reads it.
         private static volatile bool _autoCaptureExceptions = true;
@@ -332,6 +337,11 @@ namespace AnkleBreaker.Tombstack
         /// runtime flip pauses/resumes the loop on its next tick.</summary>
         internal static bool HeartbeatsEnabled => _sendHeartbeats;
 
+        /// <summary>v0.15: whether the game has begun collecting (StartSession() / Init auto-start).
+        /// Read each interval by the heartbeat loop and before each event/metric batch flush, so
+        /// nothing ships until the game's identity / environment / metadata are configured.</summary>
+        internal static bool CollectingStarted => _collectingStarted;
+
         /// <summary>v0.12: whether the per-frame stats sampler runs (config CollectFrameStats /
         /// SetCaptureEnabled(FrameStats)). Read once per frame by TombstackBehaviour.Update.</summary>
         internal static bool FrameStatsEnabled => _collectFrameStats;
@@ -467,7 +477,7 @@ namespace AnkleBreaker.Tombstack
                         "SendHeartbeats is OFF — live CCU, sessions, crash-free %, releases, fleet " +
                         "liveness, user metadata, and server-triggered log pulls will not work.");
                 _sendExceptionsInEditor = config.SendExceptionsInEditor; // read before Init so the hook-registration gate sees it
-                Init(config.GameToken, config.Endpoint, config.HeartbeatIntervalSeconds, config.Environment);
+                Init(config.GameToken, config.Endpoint, config.HeartbeatIntervalSeconds, config.Environment, config.AutoStartSession);
             }
             catch (Exception e)
             {
@@ -482,7 +492,7 @@ namespace AnkleBreaker.Tombstack
         /// <param name="gameToken">Per-game SDK token (tmb_...). Treat as a build secret.</param>
         /// <param name="endpoint">Tombstack base URL, e.g. https://your-tenant.example.com</param>
         /// <param name="heartbeatIntervalSeconds">Seconds between session heartbeats (clamped to a sane range).</param>
-        public static void Init(string gameToken, string endpoint, float heartbeatIntervalSeconds = 60f, string environment = null)
+        public static void Init(string gameToken, string endpoint, float heartbeatIntervalSeconds = 60f, string environment = null, bool autoStartSession = true)
         {
             try
             {
@@ -537,6 +547,10 @@ namespace AnkleBreaker.Tombstack
                 if (CaptureAllowed) startSessionTracking();
                 // Ship anything TrackEvent/TrackMetric buffered before init (original timestamps).
                 replayPreInitTracks();
+                // Begin sending immediately UNLESS the game opted to defer (autoStartSession:false /
+                // config AutoStartSession=false) so it can set identity/environment/metadata first and
+                // then call StartSession(). A pre-init StartSession() already latched true survives.
+                if (autoStartSession) StartSession();
             }
             catch (Exception e)
             {
@@ -870,6 +884,20 @@ namespace AnkleBreaker.Tombstack
             {
                 TombstackLog.Warn($"SetConsent follow-up failed: {e.Message}");
             }
+        }
+
+        /// <summary>
+        /// Begin sending telemetry. Call this AFTER Init + SetUser / SetEnvironment / SetUserMetadata so
+        /// the FIRST heartbeat carries the configured player identity, environment and metadata instead
+        /// of anonymous + production. Only required when auto-start is disabled (config
+        /// AutoStartSession = false, or Init(..., autoStartSession: false)); with the default the SDK
+        /// starts collecting at Init. Idempotent one-way latch — extra calls are no-ops, and it may be
+        /// called before Init (the latch survives a deferred Init). Until called (when deferred),
+        /// heartbeats and event/metric batches are held; crash and bug reports still send.
+        /// </summary>
+        public static void StartSession()
+        {
+            _collectingStarted = true;
         }
 
         /// <summary>
