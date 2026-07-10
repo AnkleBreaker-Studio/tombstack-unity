@@ -108,7 +108,8 @@ using AnkleBreaker.Tombstack;
 
 Tombstack.Init("tmb_…", "https://your-tenant.example.com");   // once, at boot
 Tombstack.SetConsent(true);                                    // GDPR / store-policy gate
-Tombstack.SetUser("user-123", steamId: "7656119…");            // once auth resolves
+Tombstack.SetUser("user-123", steamId: "7656119…");            // once auth resolves — upgrades
+                                                               // the device-derived id in-session (0.16)
 
 // Analytics events (events & funnels screens) — batched, flushed on count/age/pause/quit
 Tombstack.TrackEvent("level_complete",
@@ -198,6 +199,14 @@ try { Load(); } catch (Exception e) { Tombstack.ReportException(e); }
   the normal pipeline after `Init` with their original timestamps (consent still gates the replay).
 - **Platforms (0.9.9+):** `os` maps `RuntimePlatform.Android → "android"` and
   `IPhonePlayer → "ios"` (previously both fell through to `other`).
+- **Device identity (0.16.0+) — no anonymous players:** at first launch the SDK mints a
+  persistent device-derived id (`dev_` + 16 hex — SHA-256 of the device identifier salted with
+  your game token, so the raw identifier never leaves the device and the same device is
+  unlinkable across games; stored in `Tombstack/identity.json`) and uses it as the `userId`
+  until `SetUser(realId)`. The upgrade happens in the **same session**: a one-shot
+  `priorUserId` rides heartbeats until acked (and crash/bug reports while pending) so the
+  server merges the pre-auth telemetry into the real player. `SetUser(null)` (logout) reverts
+  to the device id — the SDK never sends an anonymous user.
 
 ## Public API
 ```csharp

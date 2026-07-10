@@ -2,6 +2,20 @@
 
 All notable changes to `com.anklebreaker.tombstack`.
 
+## [0.16.0] - 2026-07-10
+### Added — device identity: no more anonymous players
+The SDK never sends an anonymous user again. At first launch it mints a **persistent,
+device-derived provisional id** — `dev_` + 16 hex chars of SHA-256 over your game token and
+`SystemInfo.deviceUniqueIdentifier`, persisted to `Tombstack/identity.json` — and uses it as the
+`userId` on every payload until your game authenticates. The hash is **salted with your ingest
+token**, so the same physical device yields a *different* id in every game (cross-tenant
+unlinkability), and the **raw device identifier never leaves the device**. When auth resolves,
+`SetUser(realId)` upgrades the **same session**: the SDK sends a one-shot `priorUserId` field
+(spliced onto heartbeats until one is acked — lost beats re-carry it — and stamped on crash/bug
+reports while pending) so the server merges the pre-auth telemetry into the real player.
+`SetUser(null)` (logout) now **reverts to the device id** instead of going anonymous. A pre-init
+`SetUser(realId)` still wins at Init. Fully automatic — no new API.
+
 ## [0.15.0] - 2026-07-06
 ### Added — `StartSession()` so the first beat carries the player's identity + environment
 By default the SDK began sending the first heartbeat the instant it initialized — **anonymous, in the

@@ -223,6 +223,15 @@ namespace AnkleBreaker.Tombstack
         private static string _sessionId;
         private static string _userId;
         private static string _steamId;
+        // v0.16 device identity: persistent device-derived provisional id ("dev_" + 16 hex), acquired
+        // at Init (file-backed, salted with the game token) so the SDK NEVER sends an anonymous user.
+        // When auth resolves, SetUser(realId) upgrades the SAME session and stamps the provisional id
+        // once as _pendingPriorUserId — sent as "priorUserId" (heartbeats until acked; crash/bug
+        // reports while pending) so the server merges the pre-auth telemetry into the real player.
+        // Both guarded by _identityLock (same lock discipline as the metadata map).
+        private static string _provisionalUserId;
+        private static string _pendingPriorUserId;
+        private static readonly object _identityLock = new object();
         // Per-user custom metadata, merged via SetUserMetadata, sent as a "metadata" object on each
         // heartbeat. Keyed to _userId — cleared when SetUser changes the player. Locked: read off-thread.
         private static readonly Dictionary<string, string> _userMetadata = new Dictionary<string, string>(StringComparer.Ordinal);
@@ -351,7 +360,9 @@ namespace AnkleBreaker.Tombstack
         /// the watchdog clamps positive values to its 2s minimum.</summary>
         internal static float AppHangThresholdSeconds => _detectAppHangs ? _appHangThresholdSeconds : 0f;
 
-        /// <summary>Current user id ("" or null when anonymous) for heartbeat attribution.</summary>
+        /// <summary>Current user id for heartbeat attribution. After Init this is never anonymous:
+        /// the device-derived provisional id ("dev_…") until SetUser(realId), then the real id
+        /// (v0.16). Null/"" only before Init (pre-init buffered sends don't exist for heartbeats).</summary>
         internal static string CurrentUserId => _userId;
 
         /// <summary>
@@ -401,6 +412,28 @@ namespace AnkleBreaker.Tombstack
             {
                 if (epoch != _userMetadataEpoch) return; // identity changed since build → stale, drop
                 _lastSentUserMetadataJson = sentJson;
+            }
+        }
+
+        /// <summary>v0.16: the one-shot identity-upgrade marker to splice into THIS heartbeat as
+        /// <c>priorUserId</c>, or null when none is pending. Also stamped on crash/bug payloads while
+        /// pending. Carried until a heartbeat delivering it is ACKED (M1-style: a dropped beat must
+        /// not spend the marker) — commit via <see cref="CommitPriorUserIdSent"/>. Thread-safe.</summary>
+        internal static string PeekPriorUserIdForHeartbeat()
+        {
+            lock (_identityLock) { return nullIfEmpty(_pendingPriorUserId); }
+        }
+
+        /// <summary>v0.16: a heartbeat carrying <paramref name="sent"/> as its <c>priorUserId</c> got
+        /// its 2xx — stop sending the marker. Cleared only when it still ordinal-equals the pending
+        /// value, so a late ack can't clobber a marker re-stamped by a newer SetUser. Thread-safe.</summary>
+        internal static void CommitPriorUserIdSent(string sent)
+        {
+            if (string.IsNullOrEmpty(sent)) return;
+            lock (_identityLock)
+            {
+                if (string.Equals(_pendingPriorUserId, sent, StringComparison.Ordinal))
+                    _pendingPriorUserId = null;
             }
         }
 
@@ -517,6 +550,14 @@ namespace AnkleBreaker.Tombstack
                 try { _device = TombstackDevice.Capture(); }
                 catch (Exception e) { TombstackLog.Warn($"device capture failed: {e.Message}"); }
                 _isEditor = Application.isEditor;
+                // v0.16 device identity: acquire the persistent device-derived provisional id on the
+                // main thread, BEFORE the session can start beating, so no payload ever ships
+                // anonymous. Salted with the game token (same device → different id per game); the
+                // raw device identifier never goes on the wire. A pre-init SetUser(realId) wins —
+                // the provisional id is still computed so a later logout can revert to it.
+                var provisionalId = TombstackDeviceIdentity.Acquire(_gameToken);
+                lock (_identityLock) { _provisionalUserId = provisionalId; }
+                if (string.IsNullOrEmpty(_userId)) _userId = provisionalId;
                 _sessionId = newId();
                 _initialized = true;
 
@@ -560,21 +601,31 @@ namespace AnkleBreaker.Tombstack
 
         /// <summary>
         /// Associate subsequent reports and heartbeats with a player (and optional Steam64 id).
-        /// Values are clamped to the server contract (128 / 32 chars). Pass null to clear.
+        /// Values are clamped to the server contract (128 / 32 chars). Passing null (logout) reverts
+        /// to the device-derived provisional id (v0.16) — the SDK never goes anonymous after Init.
+        /// The first SetUser(realId) after Init upgrades the SAME session: a one-shot
+        /// <c>priorUserId</c> (the provisional id) rides heartbeats until acked (and crash/bug
+        /// reports while pending) so the server merges the pre-auth telemetry into the player.
         /// </summary>
-        /// <param name="userId">Your stable player identifier.</param>
+        /// <param name="userId">Your stable player identifier (null/empty = logout).</param>
         /// <param name="steamId">Optional Steam64 id (e.g. "7656119...").</param>
         public static void SetUser(string userId, string steamId = null)
         {
             try
             {
                 var next = truncate(userId, MAX_USER_ID);
+                string provisional;
+                lock (_identityLock) { provisional = _provisionalUserId; }
+                // v0.16 logout: revert to the device-derived id instead of going anonymous (pre-Init,
+                // when no provisional exists yet, this keeps the legacy clear-to-null behavior).
+                bool isLogout = string.IsNullOrEmpty(next);
+                if (isLogout) next = provisional;
                 // On ANY identity change: reset the last-ACKED baseline to "{}" so the map re-propagates
-                // under the new id. A switch away (idA→idB / id→null logout) also DROPS the map so one
-                // player's displayName/attrs never bleed onto the next; an anonymous→id login KEEPS the map
-                // (metadata set just before the first SetUser(id) must survive) — but the server drops
-                // metadata on an anonymous beat, so the baseline reset is what forces it to re-send under the
-                // now-valid id (M2). Bump the epoch so a late ack from a pre-login beat can't undo this reset.
+                // under the new id. A switch away (idA→idB / id→logout) also DROPS the map so one
+                // player's displayName/attrs never bleed onto the next; a provisional→id login KEEPS the map
+                // (metadata set just before the first SetUser(id) must survive) — the baseline reset is what
+                // forces it to re-send under the new id (M2). Bump the epoch so a late ack from a pre-login
+                // beat can't undo this reset.
                 if (!string.Equals(next, _userId, StringComparison.Ordinal))
                 {
                     lock (_userMetadataLock)
@@ -582,6 +633,22 @@ namespace AnkleBreaker.Tombstack
                         if (!string.IsNullOrEmpty(_userId)) _userMetadata.Clear();
                         _lastSentUserMetadataJson = "{}";
                         _userMetadataEpoch++;
+                    }
+                }
+                lock (_identityLock)
+                {
+                    if (isLogout)
+                    {
+                        // Logged-out telemetry must never merge into anyone — drop the pending marker.
+                        _pendingPriorUserId = null;
+                    }
+                    else if (!string.IsNullOrEmpty(provisional)
+                             && string.Equals(_userId, provisional, StringComparison.Ordinal)
+                             && !string.Equals(next, provisional, StringComparison.Ordinal))
+                    {
+                        // Auth upgrade: this session moves from the device id to the real id — stamp
+                        // the one-shot merge marker (cleared only when a payload carrying it is acked).
+                        _pendingPriorUserId = provisional;
                     }
                 }
                 _userId = next;
@@ -1011,6 +1078,8 @@ namespace AnkleBreaker.Tombstack
                     category = truncate(category, MAX_CATEGORY),
                     message = truncate(message, MAX_BUG_MESSAGE),
                     userId = nullIfEmpty(_userId),
+                    // v0.16: while the identity-upgrade marker is pending, bug reports carry it too.
+                    priorUserId = PeekPriorUserIdForHeartbeat(),
                     steamId = nullIfEmpty(_steamId),
                     breadcrumbs = snapshotBreadcrumbs(),
                     // A player writing a bug report is exactly when you want their log.
@@ -1591,6 +1660,9 @@ namespace AnkleBreaker.Tombstack
                 stackHint = truncate(string.IsNullOrEmpty(condition) ? "Exception" : condition, MAX_STACK_HINT),
                 stackTrace = truncate(stackTrace, MAX_STACK_TRACE),
                 userId = nullIfEmpty(_userId),
+                // v0.16: while the identity-upgrade marker is pending, crash reports carry it too
+                // (null → "" on the wire when none; server cleans empties like userId).
+                priorUserId = PeekPriorUserIdForHeartbeat(),
                 steamId = nullIfEmpty(_steamId),
                 breadcrumbs = snapshotBreadcrumbs(),
                 log = _uploadLogs,

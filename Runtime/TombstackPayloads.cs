@@ -28,8 +28,13 @@ namespace AnkleBreaker.Tombstack
         public string stackTrace;
         /// <summary>Deployment environment (Init / SetEnvironment; default "production"). "" → server defaults to production.</summary>
         public string environment;
-        /// <summary>Player id set via <see cref="Tombstack.SetUser"/> ("" when anonymous).</summary>
+        /// <summary>Player id set via <see cref="Tombstack.SetUser"/>; after Init never anonymous —
+        /// the device-derived provisional id ("dev_…") until auth, then the real id (v0.16).</summary>
         public string userId;
+        /// <summary>v0.16 one-shot identity-upgrade marker: the device-derived provisional id this
+        /// session used BEFORE auth ("" when none pending). The server merges the provisional
+        /// player's telemetry into <see cref="userId"/>. Cleared once a heartbeat carrying it is acked.</summary>
+        public string priorUserId;
         /// <summary>Steam64 id set via <see cref="Tombstack.SetUser"/> ("" when absent).</summary>
         public string steamId;
         /// <summary>Recent log trail leading up to the crash (oldest → newest).</summary>
@@ -97,8 +102,12 @@ namespace AnkleBreaker.Tombstack
         public string message;
         /// <summary>Deployment environment (Init / SetEnvironment; default "production"). "" → server defaults to production.</summary>
         public string environment;
-        /// <summary>Player id set via <see cref="Tombstack.SetUser"/> ("" when anonymous).</summary>
+        /// <summary>Player id set via <see cref="Tombstack.SetUser"/>; after Init never anonymous —
+        /// the device-derived provisional id ("dev_…") until auth, then the real id (v0.16).</summary>
         public string userId;
+        /// <summary>v0.16 one-shot identity-upgrade marker (same semantics as
+        /// <see cref="CrashPayload.priorUserId"/>): "" when none pending.</summary>
+        public string priorUserId;
         /// <summary>Steam64 id set via <see cref="Tombstack.SetUser"/> ("" when absent).</summary>
         public string steamId;
         /// <summary>Recent log trail leading up to the report (oldest → newest).</summary>

@@ -348,7 +348,9 @@ namespace AnkleBreaker.Tombstack
                 // interval so a runtime flip pauses/resumes the loop on its next tick.
                 if (Tombstack.CaptureAllowed && Tombstack.HeartbeatsEnabled && Tombstack.CollectingStarted)
                 {
-                    var json = buildHeartbeatJson(out var pendingMetadataJson, out var metadataEpoch, out var carriedDevice);
+                    var json = buildHeartbeatJson(
+                        out var pendingMetadataJson, out var metadataEpoch, out var carriedDevice,
+                        out var pendingPriorUserId);
                     if (json != null)
                     {
                         // Heartbeats are ephemeral — a missed beat is stale data, never retried.
@@ -360,6 +362,9 @@ namespace AnkleBreaker.Tombstack
                         beat.PendingUserMetadataEpoch = metadataEpoch;
                         // Same discipline for the one-time device snapshot (0.14): mark delivered on 2xx only.
                         beat.CarriedDevice = carriedDevice;
+                        // v0.16: the one-shot identity-upgrade marker — cleared on 2xx only, so a
+                        // dropped/failed beat re-carries it on the next tick.
+                        beat.PendingPriorUserId = pendingPriorUserId;
                         yield return send(beat);
                     }
                 }
@@ -376,12 +381,17 @@ namespace AnkleBreaker.Tombstack
         /// pending user-metadata change is spliced in AND returned via the out-params so the caller can
         /// commit the baseline only once the beat is acked (M1); both are null/0 when nothing changed.
         /// <paramref name="carriedDevice"/> is true when this beat carries the one-time device snapshot
-        /// (0.14) — the caller marks it delivered only on the beat's 2xx.</summary>
-        private string buildHeartbeatJson(out string pendingMetadataJson, out long metadataEpoch, out bool carriedDevice)
+        /// (0.14) — the caller marks it delivered only on the beat's 2xx.
+        /// <paramref name="pendingPriorUserId"/> is the v0.16 identity-upgrade marker this beat is
+        /// carrying (null when none pending) — committed on the beat's 2xx only, like the metadata.</summary>
+        private string buildHeartbeatJson(
+            out string pendingMetadataJson, out long metadataEpoch, out bool carriedDevice,
+            out string pendingPriorUserId)
         {
             pendingMetadataJson = null;
             metadataEpoch = 0;
             carriedDevice = false;
+            pendingPriorUserId = null;
             try
             {
                 var hb = new HeartbeatPayload
@@ -431,6 +441,17 @@ namespace AnkleBreaker.Tombstack
                         json = json.Substring(0, json.Length - 1) + ",\"device\":" + deviceJson + "}";
                         carriedDevice = true;
                     }
+                }
+                // Identity-upgrade marker (v0.16): spliced like the metadata object (the field is
+                // absent from HeartbeatPayload so a beat with nothing pending omits it entirely).
+                // Carried until a beat delivering it is ACKED — handleResult commits on the 2xx.
+                var priorUserId = Tombstack.PeekPriorUserIdForHeartbeat();
+                if (priorUserId != null && json.Length >= 2 && json[json.Length - 1] == '}')
+                {
+                    var escaped = new StringBuilder(priorUserId.Length + 2);
+                    TombstackJson.AppendString(escaped, priorUserId);
+                    json = json.Substring(0, json.Length - 1) + ",\"priorUserId\":" + escaped + "}";
+                    pendingPriorUserId = priorUserId; // clear this exact value once the beat is acked
                 }
                 return json;
             }
@@ -563,6 +584,9 @@ namespace AnkleBreaker.Tombstack
                             Tombstack.CommitUserMetadataForHeartbeat(item.PendingUserMetadataJson, item.PendingUserMetadataEpoch);
                         // The one-time device snapshot delivered — stop carrying it (0.14).
                         if (item.CarriedDevice) _deviceSentOnHeartbeat = true;
+                        // The identity-upgrade marker delivered — one-shot, stop sending it (v0.16).
+                        if (item.PendingPriorUserId != null)
+                            Tombstack.CommitPriorUserIdSent(item.PendingPriorUserId);
                     }
                     return;
                 }
@@ -807,6 +831,9 @@ namespace AnkleBreaker.Tombstack
             // True when this heartbeat carries the one-time device snapshot (0.14) — on its 2xx the
             // behaviour stops attaching it for the rest of the session. Mutable, never persisted.
             public bool CarriedDevice;
+            // v0.16: the identity-upgrade marker (priorUserId) this heartbeat is carrying; on its 2xx
+            // the pending marker is cleared (ordinal-matched). Null when none. Mutable, never persisted.
+            public string PendingPriorUserId;
             public string FilePath; // non-null when the item is backed by a persisted file
             public int Attempt;     // in-session retry counter
 
