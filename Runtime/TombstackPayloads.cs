@@ -58,6 +58,16 @@ namespace AnkleBreaker.Tombstack
         /// <summary>Static device/runtime context (model, OS, CPU/GPU, screen, locale, engine).
         /// Null when capture failed; the server stores only the non-empty fields.</summary>
         public DevicePayload device;
+        /// <summary>v0.17 OS exit-reason enrichment (unclean-shutdown reports only). Coarse cause:
+        /// oom | anr | signal | native_crash | … — "" on ordinary crashes (server cleans to absent).</summary>
+        public string crashType;
+        /// <summary>Raw OS constant (e.g. "REASON_LOW_MEMORY"); "" when absent.</summary>
+        public string osExitReason;
+        /// <summary>POSIX signal number when the OS reported a signaled death; 0 when absent.</summary>
+        public int osSignal;
+        /// <summary>Resident set size at death in BYTES (Android ApplicationExitInfo); 0 when absent.
+        /// Occurrence detail only — deliberately never part of the grouping signature.</summary>
+        public long rssAtDeathBytes;
     }
 
     /// <summary>Screenshot metadata attached to a crash or bug report. The bytes themselves are

@@ -2,6 +2,25 @@
 
 All notable changes to `com.anklebreaker.tombstack`.
 
+## [0.17.0] - 2026-07-20
+### Added — real OS exit reasons for unclean shutdowns (Android 11+)
+The generic *"App terminated unexpectedly"* report can now tell you **why** the app died. The
+session marker persists the process id, and at the next launch — when the unclean-shutdown
+sentinel fires — the SDK asks Android's `ApplicationExitInfo` (API 30+) what actually killed that
+exact process. The synthetic report is then enriched with a real cause:
+
+- **Distinct dashboard groups per cause:** `oom-kill`, `anr-kill`, `native-signal-<n>` (with the
+  signal name, e.g. SIGSEGV), `native-crash`, `app-crash`, `init-failure`,
+  `excessive-resource-kill` — instead of one `unclean-shutdown` bucket.
+- **New wire fields** on the crash report: `crashType` (`oom` / `anr` / `signal` / `native_crash`
+  / …), `osExitReason` (the raw OS constant), `osSignal`, and `rssAtDeathBytes` (memory at death —
+  a field, never part of the grouping signature).
+- **Fewer false positives:** deaths the OS attributes to a user force-stop, self-exit, or a
+  permission change are no longer reported as crashes at all.
+- **Fail-soft everywhere:** pre-Android-11, non-Android platforms, or any lookup failure keep the
+  exact pre-0.17 heuristic behaviour. Markers written by older SDK versions simply skip the
+  lookup. iOS MetricKit is the planned counterpart.
+
 ## [0.16.0] - 2026-07-10
 ### Added — device identity: no more anonymous players
 The SDK never sends an anonymous user again. At first launch it mints a **persistent,

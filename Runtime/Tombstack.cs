@@ -1856,7 +1856,7 @@ namespace AnkleBreaker.Tombstack
                 if (_sessionTrackingStarted || !_detectUncleanShutdown) return;
                 _sessionTrackingStarted = true;
             }
-            TombstackSessionMarker.Write(_sessionId, nowIso(), _buildVersion, _os, _arch, _isEditor);
+            TombstackSessionMarker.Write(_sessionId, nowIso(), _buildVersion, _os, _arch, _isEditor, TombstackExitInfo.CurrentPid());
             var previous = _previousMarker;
             _previousMarker = null;
             if (previous != null) reportUncleanShutdown(previous);
@@ -1884,6 +1884,18 @@ namespace AnkleBreaker.Tombstack
                 return;
             }
 
+            // v0.17: ask the OS what ACTUALLY killed the previous process (Android 11+
+            // ApplicationExitInfo, matched by the pid persisted in the marker). A real kill reason
+            // replaces the generic heuristic signature/hint below; a user/system-requested stop
+            // (force stop, self-exit, permission change) is NOT a crash and suppresses the report —
+            // exactly the false positive the heuristic couldn't tell apart. Null → unchanged heuristic.
+            var exit = TombstackExitInfo.QueryPrevious(previous.pid);
+            if (exit != null && exit.suppressReport)
+            {
+                TombstackLog.Info($"previous session was stopped on purpose ({exit.osExitReason}); not reporting a crash");
+                return;
+            }
+
             var payload = new CrashPayload
             {
                 // Detection time (this launch). The dead session's own timestamps ride in the marker,
@@ -1894,9 +1906,17 @@ namespace AnkleBreaker.Tombstack
                 buildVersion = string.IsNullOrEmpty(previous.buildVersion) ? _buildVersion : previous.buildVersion,
                 os = string.IsNullOrEmpty(previous.os) ? _os : previous.os,
                 arch = string.IsNullOrEmpty(previous.arch) ? _arch : previous.arch,
-                signature = UNCLEAN_SIGNATURE, // constant → all unclean shutdowns group together
-                stackHint = UNCLEAN_STACK_HINT,
+                // Enriched grouping when the OS gave a real reason (oom-kill / anr-kill / native-signal-N…);
+                // the constant UNCLEAN signature otherwise → unknown deaths still group together.
+                signature = exit != null && !string.IsNullOrEmpty(exit.signature) ? exit.signature : UNCLEAN_SIGNATURE,
+                stackHint = exit != null && !string.IsNullOrEmpty(exit.stackHint) ? exit.stackHint : UNCLEAN_STACK_HINT,
                 stackTrace = string.Empty,
+                // v0.17 exit-reason detail (""/0 = absent, cleaned server-side). RSS rides HERE, never
+                // in the signature — a unique RSS per crash would shatter dashboard grouping.
+                crashType = exit != null ? exit.crashType : null,
+                osExitReason = exit != null ? exit.osExitReason : null,
+                osSignal = exit != null ? exit.osSignal : 0,
+                rssAtDeathBytes = exit != null ? exit.rssAtDeathBytes : 0L,
                 userId = nullIfEmpty(_userId),
                 steamId = nullIfEmpty(_steamId),
                 breadcrumbs = null, // this launch's crumbs belong to this session, not the dead one

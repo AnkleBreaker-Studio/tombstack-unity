@@ -30,6 +30,10 @@ namespace AnkleBreaker.Tombstack
         /// <summary>UTC ISO-8601 of the last lifecycle update (session start, or the last pause/resume).
         /// Used as the crash time for a foreground death so the report is dated near when it actually died.</summary>
         public string lastAliveIso;
+        /// <summary>OS process id of the run that wrote the marker (v0.17). Lets the next launch ask the
+        /// OS why exactly THIS process died (Android ApplicationExitInfo). 0 on markers written by older
+        /// SDKs or when the pid was unavailable — the exit-reason lookup is skipped then.</summary>
+        public int pid;
     }
 
     /// <summary>
@@ -90,7 +94,7 @@ namespace AnkleBreaker.Tombstack
         /// <summary>Write this session's marker (start of the dirty-session detection window). The app
         /// starts foreground-active (backgrounded=false); <see cref="UpdateState"/> refreshes that as the
         /// app is paused/resumed so a surviving marker records the state at the moment of death.</summary>
-        internal static void Write(string sessionId, string startedAtIso, string buildVersion, string os, string arch, bool isEditor)
+        internal static void Write(string sessionId, string startedAtIso, string buildVersion, string os, string arch, bool isEditor, int pid)
         {
             try
             {
@@ -105,6 +109,7 @@ namespace AnkleBreaker.Tombstack
                     isEditor = isEditor,
                     backgrounded = false,        // a fresh session is foreground-active
                     lastAliveIso = startedAtIso, // refined on each pause/resume
+                    pid = pid,                   // v0.17: exit-reason lookup key for the next launch
                 };
                 Directory.CreateDirectory(_dirPath);
                 File.WriteAllText(_markerPath, JsonUtility.ToJson(data));
@@ -140,6 +145,7 @@ namespace AnkleBreaker.Tombstack
                     isEditor = prev.isEditor,
                     backgrounded = backgrounded,
                     lastAliveIso = string.IsNullOrEmpty(nowIso) ? prev.lastAliveIso : nowIso,
+                    pid = prev.pid,
                 };
                 File.WriteAllText(_markerPath, JsonUtility.ToJson(next));
                 _current = next; // publish only on success
