@@ -221,8 +221,11 @@ namespace AnkleBreaker.Tombstack
         private static string _endpoint;
         private static string _gameToken;
         private static string _sessionId;
-        private static string _userId;
-        private static string _steamId;
+        // volatile: read on the OFF-MAIN-THREAD crash path (logMessageReceivedThreaded → captureException)
+        // and the event/metric track path, written on the main thread (SetUser/Init). The reference read
+        // is atomic regardless, but volatile prevents a stale-identity attribution on ARM after SetUser.
+        private static volatile string _userId;
+        private static volatile string _steamId;
         // v0.16 device identity: persistent device-derived provisional id ("dev_" + 16 hex), acquired
         // at Init (file-backed, salted with the game token) so the SDK NEVER sends an anonymous user.
         // When auth resolves, SetUser(realId) upgrades the SAME session and stamps the provisional id
@@ -248,9 +251,11 @@ namespace AnkleBreaker.Tombstack
         // Correlation context: stamped on every payload so server<->session<->match<->player
         // linking is exact. Defaults make a plain client send role="client" + empty ids ("" is
         // cleaned to undefined server-side, like userId). Set via SetMatchContext/StartMatch.
-        private static string _role = "client";
-        private static string _serverId = "";
-        private static string _matchId = "";
+        // volatile: same off-thread crash/track read as _userId/_steamId (correlation is stamped on
+        // payloads built off the main thread).
+        private static volatile string _role = "client";
+        private static volatile string _serverId = "";
+        private static volatile string _matchId = "";
         // Server-lifetime fleet metadata, set once via SetServerInfo on a dedicated server. Like _serverId
         // (and unlike _matchId) these persist across matches and are NOT cleared by EndMatch — the box keeps
         // its region/hostname for its whole lifetime. "" when unset (cleaned to undefined server-side).
@@ -258,7 +263,7 @@ namespace AnkleBreaker.Tombstack
         private static string _hostname = "";
         // Deployment environment stamped on ALL telemetry (crashes, events, metrics, heartbeats, bug reports).
         // Defaults to "production"; set at Init or via SetEnvironment. Empty is treated as "production" server-side.
-        private static string _environment = "production";
+        private static volatile string _environment = "production";  // volatile: read off-thread on the crash/track path
         // True once game code called SetEnvironment explicitly. Guards the classic footgun: a bridge
         // that calls SetEnvironment("staging") in an EARLY RuntimeInitializeOnLoadMethod phase runs
         // BEFORE autoInit (BeforeSceneLoad), and Init would silently clobber it back to the config
@@ -1516,7 +1521,11 @@ namespace AnkleBreaker.Tombstack
             }
             if (rate >= 1f) return true;
             if (rate <= 0f) return false;
-            var rng = _sampleRng ?? (_sampleRng = new System.Random());
+            // Seed per-thread RNGs distinctly: bare `new System.Random()` uses a time-based seed, so
+            // two threads constructing within the same tick would sample in lockstep (correlated
+            // keep/drop). XOR in the managed thread id to decorrelate.
+            var rng = _sampleRng ?? (_sampleRng = new System.Random(
+                unchecked(Environment.TickCount * 31 + System.Threading.Thread.CurrentThread.ManagedThreadId)));
             return rng.NextDouble() < rate;
         }
 

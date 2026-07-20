@@ -2,6 +2,17 @@
 
 All notable changes to `com.anklebreaker.tombstack`.
 
+## [0.17.1] - 2026-07-20
+### Fixed (production audit; no API/wire change)
+- **Thread visibility of player identity on the crash path.** The player-context fields read on the
+  off-main-thread crash/track path (`userId`, `steamId`, `role`, `serverId`, `matchId`, `environment`)
+  are now `volatile`, matching the consent/lifecycle toggles — a crash captured immediately after
+  `SetUser`/`SetMatchContext` on mobile ARM can no longer be attributed to the previous identity.
+- **Decorrelated sampling RNG.** Per-thread `System.Random` is now seeded with the tick XOR the
+  managed thread id, so two threads constructing within the same tick no longer sample in lockstep.
+- **JSON hardening.** `TombstackJson.AppendString` null-guards to `""` (latent NRE safety; no live
+  caller passes null).
+
 ## [0.17.0] - 2026-07-20
 ### Added — real OS exit reasons for unclean shutdowns (Android 11+)
 The generic *"App terminated unexpectedly"* report can now tell you **why** the app died. The

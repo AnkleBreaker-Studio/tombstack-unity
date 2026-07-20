@@ -15,6 +15,10 @@ namespace AnkleBreaker.Tombstack
         /// <summary>Append <c>"value"</c> with standard JSON escaping (quotes, backslash, control chars).</summary>
         internal static void AppendString(StringBuilder sb, string value)
         {
+            // Null-guard: no live caller passes null today (all clamp/skip first), but treating a null
+            // as the empty string keeps this a total function — a latent NRE here would abort a whole
+            // payload build. Emits `""`.
+            if (value == null) { sb.Append("\"\""); return; }
             sb.Append('"');
             for (int i = 0; i < value.Length; i++)
             {
