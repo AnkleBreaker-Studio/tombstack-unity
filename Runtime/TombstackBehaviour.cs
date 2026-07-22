@@ -133,13 +133,18 @@ namespace AnkleBreaker.Tombstack
         /// <param name="requestLog">True when the body carries <c>"log":true</c> — after the
         /// 2xx the response's <c>logUpload</c> presign is used to PUT the session log.</param>
         /// <param name="logFromPreviousSession">True when the granted presign should upload the
-        /// preserved <c>previous-session.log</c> (unclean-shutdown report) instead of the
+        /// preserved most-recent-prior session log (unclean-shutdown report) instead of the
         /// current session's log.</param>
+        /// <param name="targetSessionId">v0.18: when set, a granted log presign uploads THIS specific
+        /// retained session's log (a past-session pull) instead of the current session's. Null ⇒
+        /// current session (unchanged behaviour). Ignored when <paramref name="logFromPreviousSession"/>
+        /// is true.</param>
         internal static void Enqueue(
             string path, string json, UploadDurability durability,
-            bool requestLog = false, bool logFromPreviousSession = false)
+            bool requestLog = false, bool logFromPreviousSession = false, string targetSessionId = null)
         {
             var item = PendingUpload.Post(path, json, durability, null, requestLog, logFromPreviousSession);
+            item.TargetSessionId = targetSessionId;
             if (durability == UploadDurability.WriteAhead) persist(item);
             enqueueOutbound(item);
         }
@@ -442,6 +447,24 @@ namespace AnkleBreaker.Tombstack
                         carriedDevice = true;
                     }
                 }
+                // Retained past sessions (v0.18): the session ids whose logs this client still holds,
+                // so the server can target a PAST session this client was in with a log pull. Spliced
+                // manually (like the metadata object) and ONLY when non-empty, so a client with no
+                // retained past logs sends a byte-identical (unchanged) heartbeat. JsonUtility handles
+                // string[], but auto-serializing would emit "[]" on every empty beat — hence the splice.
+                var retained = TombstackSessionLog.RetainedSessionIds();
+                if (retained != null && retained.Count > 0 && json.Length >= 2 && json[json.Length - 1] == '}')
+                {
+                    var arr = new StringBuilder(retained.Count * 34 + 20);
+                    arr.Append('[');
+                    for (int i = 0; i < retained.Count; i++)
+                    {
+                        if (i > 0) arr.Append(',');
+                        TombstackJson.AppendString(arr, retained[i]);
+                    }
+                    arr.Append(']');
+                    json = json.Substring(0, json.Length - 1) + ",\"retainedSessions\":" + arr + "}";
+                }
                 // Identity-upgrade marker (v0.16): spliced like the metadata object (the field is
                 // absent from HeartbeatPayload so a beat with nothing pending omits it entirely).
                 // Carried until a beat delivering it is ACKED — handleResult commits on the 2xx.
@@ -640,18 +663,26 @@ namespace AnkleBreaker.Tombstack
 
                 bool fromPrevious = item.FromPreviousSession;
                 if (fromPrevious && Interlocked.Exchange(ref _previousLogClaimed, 1) == 1)
-                    return; // previous-session.log already uploaded (or in flight) this launch
+                    return; // the most-recent-prior session log already uploaded (or in flight) this launch
 
                 var url = target.url;
                 var formFields = target.formFields;
+                // v0.18: a past-session pull reads THAT specific retained session's log; a
+                // most-recent-prior (unclean-shutdown) upload reads the previous log; otherwise the
+                // current session's log. targetSessionId wins only when it is a genuine PAST session.
+                string targetSessionId = item.TargetSessionId;
                 ThreadPool.QueueUserWorkItem(_ =>
                 {
                     try
                     {
                         byte[] bytes;
-                        bool ok = fromPrevious
-                            ? TombstackSessionLog.TryReadPreviousLog(out bytes)
-                            : TombstackSessionLog.TryReadCurrentLog(out bytes);
+                        bool ok;
+                        if (fromPrevious)
+                            ok = TombstackSessionLog.TryReadPreviousLog(out bytes);
+                        else if (!string.IsNullOrEmpty(targetSessionId))
+                            ok = TombstackSessionLog.TryReadSessionLog(targetSessionId, out bytes);
+                        else
+                            ok = TombstackSessionLog.TryReadCurrentLog(out bytes);
                         if (!ok) return;
                         enqueueOutbound(PendingUpload.LogPut(url, bytes, formFields));
                     }
@@ -722,10 +753,25 @@ namespace AnkleBreaker.Tombstack
                     if (p == null || string.IsNullOrEmpty(p.requestId)) continue;
                     if (!targetsThisClient(p, userId, sessionId, matchId, serverId)) continue;
 
+                    // v0.18: a sessionId pull may target a PAST session this client retains (not the
+                    // current one). When so, the fulfil's asserted sessionId + the uploaded log must be
+                    // that PAST session's, while the nonce still belongs to the CURRENT beat session.
+                    bool isPastSession = p.targetType == "sessionId"
+                                         && !string.Equals(p.targetValue, sessionId, StringComparison.Ordinal)
+                                         && TombstackSessionLog.HasRetainedSession(p.targetValue);
+                    string uploadSessionId = isPastSession ? p.targetValue : _sessionId;
+
                     var payload = new PullFulfillPayload
                     {
                         userId = Tombstack.CurrentUserId,                          // null → "" via JsonUtility; server cleans it
-                        sessionId = _sessionId,                                    // the session this client heartbeated with
+                        // For a past-session pull this is the PAST session being uploaded for; otherwise
+                        // the session this client heartbeated with. (The nonce below stays bound to the
+                        // CURRENT beat session regardless.)
+                        sessionId = uploadSessionId,
+                        // Always the CURRENT beat session — the nonce was minted over it, so the server
+                        // verifies against this (never the possibly-past upload session). Non-empty so
+                        // the server's optional min(1) field is satisfied on every fulfil.
+                        nonceSessionId = _sessionId,
                         matchId = string.IsNullOrEmpty(matchId) ? null : matchId,
                         serverId = string.IsNullOrEmpty(serverId) ? null : serverId,
                         nonce = p.fulfillNonce,                                    // present the fulfilment nonce from the ack
@@ -733,8 +779,11 @@ namespace AnkleBreaker.Tombstack
                     };
                     // requestLog:true → the fulfil 2xx's data.logUpload is chased exactly like a crash/bug,
                     // reusing scheduleLogUpload (log read ≤512 KB on the ThreadPool, never the main thread).
+                    // targetSessionId (past-session pulls only) tells scheduleLogUpload which retained
+                    // session's bytes to read; null ⇒ the current session log (unchanged behaviour).
                     Enqueue($"{PULL_REQUESTS_PATH}/{p.requestId}/fulfill",
-                        JsonUtility.ToJson(payload), UploadDurability.PersistOnFailure, requestLog: true);
+                        JsonUtility.ToJson(payload), UploadDurability.PersistOnFailure, requestLog: true,
+                        targetSessionId: isPastSession ? p.targetValue : null);
                 }
             }
             catch (Exception e)
@@ -744,14 +793,20 @@ namespace AnkleBreaker.Tombstack
         }
 
         /// <summary>Mirror of the server's heartbeatMatchesRequest — the client uploads only when it
-        /// is genuinely targeted (and only ever its OWN log). An empty asserted id never matches.</summary>
+        /// is genuinely targeted (and only ever its OWN log). An empty asserted id never matches.
+        /// v0.18: a <c>sessionId</c> pull ALSO matches when the target is one of this client's RETAINED
+        /// PAST session ids — a client that was on a past server boot reconnects in a NEW session, so
+        /// without this a session-targeted pull for that past boot would never match.</summary>
         private static bool targetsThisClient(
             PullRequestDto p, string userId, string sessionId, string matchId, string serverId)
         {
             switch (p.targetType)
             {
                 case "userId": return !string.IsNullOrEmpty(userId) && userId == p.targetValue;
-                case "sessionId": return !string.IsNullOrEmpty(sessionId) && sessionId == p.targetValue;
+                case "sessionId":
+                    if (!string.IsNullOrEmpty(sessionId) && sessionId == p.targetValue) return true;
+                    // Past-session pull: match a retained session id (log still on disk to upload).
+                    return TombstackSessionLog.HasRetainedSession(p.targetValue);
                 case "matchId": return !string.IsNullOrEmpty(matchId) && matchId == p.targetValue;
                 case "server": return !string.IsNullOrEmpty(serverId) && serverId == p.targetValue;
                 default: return false;
@@ -813,7 +868,12 @@ namespace AnkleBreaker.Tombstack
             public readonly string Body;
             public readonly UploadDurability Durability;
             public readonly bool RequestedLog;        // body carries "log":true → chase the presign on 2xx
-            public readonly bool FromPreviousSession; // a granted presign uploads previous-session.log
+            public readonly bool FromPreviousSession; // a granted presign uploads the most-recent-prior session log
+            // v0.18: when set, a granted presign uploads THIS specific retained session's log (a
+            // past-session pull) instead of the current session's. Null ⇒ current session. Mutable
+            // (set right after Post by the pull-fulfil path); never persisted (a presign is dead by
+            // the next launch anyway).
+            public string TargetSessionId;
             public readonly bool IsLogPut;            // raw PUT to AbsoluteUrl instead of a JSON POST
             public readonly string AbsoluteUrl;
             public readonly byte[] RawBody;

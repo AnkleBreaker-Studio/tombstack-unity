@@ -20,11 +20,22 @@ namespace AnkleBreaker.Tombstack
         private const int MAX_HITCH_COUNT = 1000000;
         private const int MAX_WORST_FRAME_MS = 10000000;
 
+        // Intra-beat sampling: snapshot the average FPS every ~20s within the (default 60s) heartbeat
+        // window and ship the series so the dashboard sees sub-beat frame health without extra rows.
+        private const float SUBSAMPLE_WINDOW_SECONDS = 20f;
+        private const int MAX_SUBSAMPLES = 6; // 6 × 20s covers up to a 120s beat (interval cap is 600s but samples are bounded)
+
         private static int _frameCount;
         private static float _elapsedSeconds;
         private static int _slowFrames;
         private static int _hitchCount;
         private static float _worstFrameMs;
+
+        // 20s sub-window accumulators + the collected per-window FPS snapshots for this beat.
+        private static int _subFrames;
+        private static float _subElapsedSeconds;
+        private static readonly float[] _subSamples = new float[MAX_SUBSAMPLES];
+        private static int _subCount;
 
         /// <summary>Accumulate one frame. Called once per frame with <c>Time.unscaledDeltaTime</c>
         /// (unscaled so a paused/slow-motion timeScale never fakes a slow frame). Allocation-free.</summary>
@@ -38,6 +49,27 @@ namespace AnkleBreaker.Tombstack
             if (ms > SLOW_FRAME_MS) _slowFrames++;
             if (ms > HITCH_FRAME_MS && _hitchCount < MAX_HITCH_COUNT) _hitchCount++;
             if (ms > _worstFrameMs) _worstFrameMs = ms;
+
+            // 20s intra-beat window: when it fills, snapshot its average FPS and start the next window.
+            // Allocation-free (writes into the fixed buffer); the last (partial) window is captured at drain.
+            _subFrames++;
+            _subElapsedSeconds += unscaledDeltaSeconds;
+            if (_subElapsedSeconds >= SUBSAMPLE_WINDOW_SECONDS)
+            {
+                captureSubSample();
+                _subFrames = 0;
+                _subElapsedSeconds = 0f;
+            }
+        }
+
+        /// <summary>Record the current sub-window's average FPS (clamped) into the fixed buffer, dropping
+        /// the oldest silently once full so a very long beat can't grow the series unbounded.</summary>
+        private static void captureSubSample()
+        {
+            if (_subFrames <= 0 || _subElapsedSeconds <= 0f) return;
+            float fps = _subFrames / _subElapsedSeconds;
+            if (fps > MAX_FPS) fps = MAX_FPS;
+            if (_subCount < MAX_SUBSAMPLES) _subSamples[_subCount++] = fps;
         }
 
         /// <summary>
@@ -61,11 +93,27 @@ namespace AnkleBreaker.Tombstack
             if (slowFramePct > 100f) slowFramePct = 100f;
             int hitchCount = _hitchCount;
             int worstFrameMs = _worstFrameMs > MAX_WORST_FRAME_MS ? MAX_WORST_FRAME_MS : (int)_worstFrameMs;
+            // Capture the trailing partial 20s window so a 60s beat yields ~3 samples (not 2 + a lost tail).
+            captureSubSample();
+            var subCount = _subCount;
+            var samples = new float[subCount];
+            for (int i = 0; i < subCount; i++) samples[i] = _subSamples[i];
             reset();
-            return string.Format(
+            var core = string.Format(
                 CultureInfo.InvariantCulture,
                 "\"fpsAvg\":{0:0.0},\"slowFramePct\":{1:0.0},\"hitchCount\":{2},\"worstFrameMs\":{3}",
                 fpsAvg, slowFramePct, hitchCount, worstFrameMs);
+            if (subCount == 0) return core;
+            // Per-20s FPS series folded into this beat (no extra rows): "fpsSamples":[59.9,58.1,60.0]
+            var sb = new System.Text.StringBuilder(core.Length + subCount * 7 + 16);
+            sb.Append(core).Append(",\"fpsSamples\":[");
+            for (int i = 0; i < subCount; i++)
+            {
+                if (i > 0) sb.Append(',');
+                sb.AppendFormat(CultureInfo.InvariantCulture, "{0:0.0}", samples[i]);
+            }
+            sb.Append(']');
+            return sb.ToString();
         }
 
         /// <summary>Start a fresh accumulation interval (every drain resets, sampled or not).</summary>
@@ -76,6 +124,9 @@ namespace AnkleBreaker.Tombstack
             _slowFrames = 0;
             _hitchCount = 0;
             _worstFrameMs = 0f;
+            _subFrames = 0;
+            _subElapsedSeconds = 0f;
+            _subCount = 0;
         }
     }
 }

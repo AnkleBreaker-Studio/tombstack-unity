@@ -2,6 +2,22 @@
 
 All notable changes to `com.anklebreaker.tombstack`.
 
+## [0.18.0] - 2026-07-22
+### Added
+- **Retain the last N launch logs (default 3, configurable).** The session log now keeps the newest
+  N per-launch logs on disk, keyed by session id (`session-<sessionId>.log`), instead of just
+  current + previous. Set the count via `TombstackConfig.RetainedLaunchLogs` or the new
+  `Tombstack.Init(..., retainedLaunchLogs)` parameter (1–10). Unclean-shutdown detection and the
+  512 KB per-file cap are unchanged; legacy `session.log`/`previous-session.log` are migrated, not lost.
+- **Server-session log pulls now reach players who have left.** The heartbeat advertises the client's
+  retained past session ids (`retainedSessions`), so a log-pull targeting a past server-boot session
+  is offered to that client on a later launch; the client uploads THAT specific retained session's
+  log (not the current one). The fulfil nonce stays bound to the current beat session.
+- **20s intra-beat frame sampling.** Frame health is now snapshotted every ~20s within each 60s
+  heartbeat and shipped as a `fpsSamples` series folded into the beat, so the dashboard sees sub-beat
+  FPS at 20s granularity. The heartbeat SEND cadence stays 60s (no extra rows / no 3× ingest cost) —
+  the finer sampling rides the existing beat.
+
 ## [0.17.1] - 2026-07-20
 ### Fixed (production audit; no API/wire change)
 - **Thread visibility of player identity on the crash path.** The player-context fields read on the

@@ -185,6 +185,10 @@ namespace AnkleBreaker.Tombstack
         // never affected, and shipped builds (not _isEditor) always capture.
         private static bool _sendExceptionsInEditor = true;
         private static bool _uploadLogs = true;
+        // v0.18: how many recent session logs to retain on disk (keyed by session id) so a specific
+        // past session's log can be pulled on demand. Default 3; clamped to a sane range in the log
+        // module. Overridden from TombstackConfigSO at auto-init / the Init param.
+        private static int _retainedLaunchLogs = 3;
         private static bool _detectUncleanShutdown = true;
         // Screenshot auto-capture (see TombstackScreenshot). Bug capture defaults ON; exception
         // capture is opt-in. Overridden from TombstackConfigSO at auto-init.
@@ -495,6 +499,7 @@ namespace AnkleBreaker.Tombstack
                 if (!captureOverridden(TombstackCapture.Exceptions))
                     _autoCaptureExceptions = config.AutoCaptureExceptions;
                 _uploadLogs = config.UploadLogs;
+                _retainedLaunchLogs = config.RetainedLaunchLogs;
                 _detectUncleanShutdown = config.DetectUncleanShutdown;
                 _captureScreenshotOnBugReport = config.CaptureScreenshotOnBugReport;
                 _captureScreenshotOnException = config.CaptureScreenshotOnException;
@@ -515,7 +520,7 @@ namespace AnkleBreaker.Tombstack
                         "SendHeartbeats is OFF — live CCU, sessions, crash-free %, releases, fleet " +
                         "liveness, user metadata, and server-triggered log pulls will not work.");
                 _sendExceptionsInEditor = config.SendExceptionsInEditor; // read before Init so the hook-registration gate sees it
-                Init(config.GameToken, config.Endpoint, config.HeartbeatIntervalSeconds, config.Environment, config.AutoStartSession);
+                Init(config.GameToken, config.Endpoint, config.HeartbeatIntervalSeconds, config.Environment, config.AutoStartSession, config.RetainedLaunchLogs);
             }
             catch (Exception e)
             {
@@ -530,7 +535,9 @@ namespace AnkleBreaker.Tombstack
         /// <param name="gameToken">Per-game SDK token (tmb_...). Treat as a build secret.</param>
         /// <param name="endpoint">Tombstack base URL, e.g. https://your-tenant.example.com</param>
         /// <param name="heartbeatIntervalSeconds">Seconds between session heartbeats (clamped to a sane range).</param>
-        public static void Init(string gameToken, string endpoint, float heartbeatIntervalSeconds = 60f, string environment = null, bool autoStartSession = true)
+        /// <param name="retainedLaunchLogs">How many recent session logs to retain on disk, keyed by
+        /// session id, so a specific past session's log can be pulled on demand (clamped to 1..10; default 3).</param>
+        public static void Init(string gameToken, string endpoint, float heartbeatIntervalSeconds = 60f, string environment = null, bool autoStartSession = true, int retainedLaunchLogs = 3)
         {
             try
             {
@@ -542,6 +549,9 @@ namespace AnkleBreaker.Tombstack
                 }
                 _gameToken = gameToken;
                 _endpoint = endpoint.TrimEnd('/');
+                // Retention count: the Init param carries it (auto-init passes the config value here), so a
+                // direct Init(...) caller can set it too. The log module clamps to its sane range.
+                _retainedLaunchLogs = retainedLaunchLogs;
                 // Environment precedence: an explicit SetEnvironment call (even BEFORE Init — early
                 // bootstrap bridges do this) always wins over Init's param / the config asset value;
                 // otherwise apply the Init value; otherwise keep the "production" default.
@@ -569,7 +579,7 @@ namespace AnkleBreaker.Tombstack
                 // Main-thread-only values (persistentDataPath) are cached here, like
                 // version/os/arch above — everything after this point may run off-thread.
                 var persistentDataPath = Application.persistentDataPath;
-                TombstackSessionLog.Configure(persistentDataPath);
+                TombstackSessionLog.Configure(persistentDataPath, _sessionId, _retainedLaunchLogs);
                 TombstackSessionMarker.Configure(persistentDataPath);
 
                 // Local file bookkeeping (not capture, so not consent-gated): preserve the

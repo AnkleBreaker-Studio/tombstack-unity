@@ -204,6 +204,13 @@ namespace AnkleBreaker.Tombstack
         /// <summary>Deployment environment (Init / SetEnvironment; default "production") — feeds the dashboard
         /// environment filter. "" → server defaults to production.</summary>
         public string environment;
+        /// <summary>v0.18: session ids whose logs this client still retains (newest first), so the server
+        /// can target a PAST session this client was in with a log pull. Wire field
+        /// <c>retainedSessions: string[]</c>. NOT auto-serialized — <see cref="TombstackBehaviour"/>
+        /// splices it in manually and ONLY when non-empty, so a client with no retained past logs sends a
+        /// byte-identical (unchanged) heartbeat. Declared here (marked non-serialized) purely to document
+        /// the wire contract next to the other heartbeat fields.</summary>
+        [NonSerialized] public string[] retainedSessions;
     }
 
     // ── Ingest response DTOs (parse-only) ───────────────────────────────────────────────────
@@ -306,8 +313,14 @@ namespace AnkleBreaker.Tombstack
     {
         /// <summary>Player id set via <see cref="Tombstack.SetUser"/> ("" when anonymous).</summary>
         public string userId;
-        /// <summary>This launch's session id (the one the client heartbeated with).</summary>
+        /// <summary>The session the log is uploaded FOR — normally this launch's session, but a
+        /// RETAINED PAST session for a server-session pull of a player who has since left. Keyed by
+        /// the server as the pulled-log's session.</summary>
         public string sessionId;
+        /// <summary>The CURRENT beat session the heartbeat ack minted the nonce over (always this
+        /// launch's session). Distinct from <see cref="sessionId"/> only for a past-session pull; the
+        /// server verifies the nonce against THIS. Always sent (never empty).</summary>
+        public string nonceSessionId;
         /// <summary>Correlation: current match id (null when unset → omitted-equivalent server-side).</summary>
         public string matchId;
         /// <summary>Correlation: current server id (null when unset).</summary>

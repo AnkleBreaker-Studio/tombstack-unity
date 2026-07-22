@@ -44,6 +44,9 @@ namespace AnkleBreaker.Tombstack
         [Tooltip("Keep a rolling session log (~512 KB) and upload it with crash and bug reports.")]
         [SerializeField] private bool _uploadLogs = true;
 
+        [Tooltip("How many recent launch/session logs to retain on disk (keyed by session id), so a specific PAST session's log can be pulled on demand by a server-side log request. Clamped to 1..10; default 3.")]
+        [SerializeField] private int _retainedLaunchLogs = 3;
+
         [Tooltip("On launch, detect a previous session that ended without a clean shutdown (hard crash, OOM kill, force quit) and report it with the preserved log.")]
         [SerializeField] private bool _detectUncleanShutdown = true;
 
@@ -85,6 +88,7 @@ namespace AnkleBreaker.Tombstack
         public string Environment => _environment;
         public bool AutoCaptureExceptions => _autoCaptureExceptions;
         public bool UploadLogs => _uploadLogs;
+        public int RetainedLaunchLogs => _retainedLaunchLogs;
         public bool DetectUncleanShutdown => _detectUncleanShutdown;
         public bool AutoRttMetric => _autoRttMetric;
         public bool AutoSceneBreadcrumbs => _autoSceneBreadcrumbs;
