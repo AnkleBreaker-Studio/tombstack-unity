@@ -983,6 +983,29 @@ namespace AnkleBreaker.Tombstack
         }
 
         /// <summary>
+        /// Send a single session heartbeat immediately, in addition to the periodic loop — use it to
+        /// mark the session live at a moment that matters (e.g. right before the app backgrounds or
+        /// quits) so CCU / liveness stay tight without waiting for the next interval. The SDK already
+        /// does this automatically on app pause (minimize) and quit; call it manually for other
+        /// custom lifecycle moments. Gated exactly like the periodic loop
+        /// (consent + heartbeats enabled + <see cref="StartSession"/> reached) and best-effort /
+        /// ephemeral — a beat that can't be delivered (e.g. the process dies mid-send on quit) is
+        /// simply lost, never retried. Fail-silent; never throws into game code.
+        /// </summary>
+        public static void SendHeartbeatNow()
+        {
+            try
+            {
+                if (!CaptureAllowed || !HeartbeatsEnabled || !CollectingStarted) return;
+                TombstackBehaviour.SendHeartbeatNow();
+            }
+            catch (Exception e)
+            {
+                TombstackLog.Warn($"SendHeartbeatNow failed: {e.Message}");
+            }
+        }
+
+        /// <summary>
         /// v0.12: enable/disable one capture subsystem at runtime — a finer-grained override of the
         /// config-asset toggles. Fail-silent and idempotent; safe before or after <see cref="Init"/>
         /// (a pre-init call just seeds the state Init starts with). Per-subsystem behaviour and limits:
@@ -1675,6 +1698,11 @@ namespace AnkleBreaker.Tombstack
                 os = _os,
                 arch = _arch,
                 signature = signature,
+                // v0.19 kind: every path into captureException is a MANAGED exception — the Unity-log
+                // LogType.Exception handler, manual ReportException, the unobserved-Task hook, and the
+                // AppDomain unhandled hook — so it is always "exception" (never a real process death,
+                // which only the unclean-shutdown path can classify as "crash").
+                kind = "exception",
                 // stackHint has a server-side min(1): never send it empty.
                 stackHint = truncate(string.IsNullOrEmpty(condition) ? "Exception" : condition, MAX_STACK_HINT),
                 stackTrace = truncate(stackTrace, MAX_STACK_TRACE),
@@ -1930,6 +1958,10 @@ namespace AnkleBreaker.Tombstack
                 signature = exit != null && !string.IsNullOrEmpty(exit.signature) ? exit.signature : UNCLEAN_SIGNATURE,
                 stackHint = exit != null && !string.IsNullOrEmpty(exit.stackHint) ? exit.stackHint : UNCLEAN_STACK_HINT,
                 stackTrace = string.Empty,
+                // v0.19 kind: when the OS told us a real cause (oom / anr / signal / native_crash) this
+                // was a genuine process death → "crash"; otherwise it's the heuristic sentinel with no
+                // known cause → "unclean_shutdown".
+                kind = exit != null && !string.IsNullOrEmpty(exit.crashType) ? "crash" : "unclean_shutdown",
                 // v0.17 exit-reason detail (""/0 = absent, cleaned server-side). RSS rides HERE, never
                 // in the signature — a unique RSS per crash would shatter dashboard grouping.
                 crashType = exit != null ? exit.crashType : null,

@@ -58,6 +58,13 @@ namespace AnkleBreaker.Tombstack
         /// <summary>Static device/runtime context (model, OS, CPU/GPU, screen, locale, engine).
         /// Null when capture failed; the server stores only the non-empty fields.</summary>
         public DevicePayload device;
+        /// <summary>v0.19 crash classification for the wire, ∈ {"crash","exception","unclean_shutdown"}.
+        /// Lets the dashboard label reports accurately instead of calling everything a "crash":
+        /// managed Unity-log exceptions / <see cref="Tombstack.ReportException"/> / unobserved-Task /
+        /// AppDomain paths → "exception"; the synthetic unclean-shutdown report → "unclean_shutdown";
+        /// a real process death enriched by the OS exit reason (see <see cref="crashType"/>) → "crash".
+        /// Plain optional string — "" (absent) makes the server derive the kind (back-compat).</summary>
+        public string kind;
         /// <summary>v0.17 OS exit-reason enrichment (unclean-shutdown reports only). Coarse cause:
         /// oom | anr | signal | native_crash | … — "" on ordinary crashes (server cleans to absent).</summary>
         public string crashType;

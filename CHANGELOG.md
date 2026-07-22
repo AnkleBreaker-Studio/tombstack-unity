@@ -2,6 +2,21 @@
 
 All notable changes to `com.anklebreaker.tombstack`.
 
+## [0.19.0] - 2026-07-22
+### Added
+- **Crash `kind` classification on the wire.** Reports now carry an optional `kind` so the dashboard
+  can label them accurately instead of calling everything a "crash": managed exceptions (Unity-log
+  `LogType.Exception`, `ReportException`, unobserved-Task, and AppDomain paths) → `"exception"`; the
+  synthetic next-launch report → `"unclean_shutdown"`, or `"crash"` when the OS gave a real exit
+  reason (oom / anr / signal / native_crash) i.e. a genuine process death. Absent → the server derives
+  the kind (fully back-compatible; no other wire change).
+- **Heartbeat on background (minimize) + quit.** The SDK now sends an on-demand session heartbeat when
+  the app is backgrounded and (best-effort) on quit, so live CCU / session liveness stay tight without
+  waiting for the next interval tick. Also exposed as `Tombstack.SendHeartbeatNow()` for custom
+  lifecycle moments. Gated exactly like the periodic loop (consent + heartbeats enabled + session
+  started) and ephemeral — a lost quit-beat is fine, and there is no CCU double-count (the server
+  dedupes a session per game).
+
 ## [0.18.0] - 2026-07-22
 ### Added
 - **Retain the last N launch logs (default 3, configurable).** The session log now keeps the newest

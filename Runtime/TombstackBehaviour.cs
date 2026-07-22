@@ -301,6 +301,9 @@ namespace AnkleBreaker.Tombstack
                 {
                     FlushBatches();
                     TombstackSessionLog.FlushNow(); // persist the log tail before the OS suspends/kills us
+                    // v0.19: mark the session live at background time so CCU/liveness stay tight even
+                    // if this app sits minimized past the next interval tick (gated + ephemeral inside).
+                    SendHeartbeatNow();
                 }
             }
             catch (System.Exception e) { TombstackLog.Warn("flush failed: " + e.Message); }
@@ -311,7 +314,14 @@ namespace AnkleBreaker.Tombstack
         // anyway, so a missed join can never keep the process alive).
         private void OnApplicationQuit()
         {
-            try { FlushBatches(); }
+            try
+            {
+                FlushBatches();
+                // v0.19: best-effort on-demand quit beat. Fire-and-forget — it joins the outbound queue
+                // but UnityWebRequest can't complete synchronously on quit, so a lost quit-beat is
+                // acceptable (beats are ephemeral; the session already beat while live).
+                SendHeartbeatNow();
+            }
             catch (System.Exception e) { TombstackLog.Warn("flush failed: " + e.Message); }
             TombstackAppHang.Stop();
         }
@@ -375,6 +385,41 @@ namespace AnkleBreaker.Tombstack
                 }
                 yield return wait;
             }
+        }
+
+        /// <summary>
+        /// v0.19: send a single on-demand heartbeat NOW (app minimize / quit), so a session is marked
+        /// live at background/close time and CCU/liveness stay tight without waiting for the next
+        /// interval tick. Gated by the SAME conditions as the periodic loop
+        /// (CaptureAllowed &amp;&amp; HeartbeatsEnabled &amp;&amp; CollectingStarted) and enqueued
+        /// <see cref="UploadDurability.Ephemeral"/> (identical to the periodic beat: a missed beat is
+        /// stale data, never retried). NOT a schema change — the server treats it as a normal beat and
+        /// dedupes per (game, session), so no CCU double-count. Fires the beat through the normal
+        /// outbound queue (drained on the main thread); on quit the request may not complete before the
+        /// process dies — that lost quit-beat is acceptable (beats are ephemeral). Fail-silent.
+        /// </summary>
+        internal static void SendHeartbeatNow()
+        {
+            var inst = _instance;
+            if (inst == null) return;
+            if (!Tombstack.CaptureAllowed || !Tombstack.HeartbeatsEnabled || !Tombstack.CollectingStarted) return;
+            try
+            {
+                var json = inst.buildHeartbeatJson(
+                    out var pendingMetadataJson, out var metadataEpoch, out var carriedDevice,
+                    out var pendingPriorUserId);
+                if (json == null) return;
+                var beat = PendingUpload.Post(
+                    HEARTBEATS_PATH, json, UploadDurability.Ephemeral, null, false, false);
+                // Same ack-gated M1 delivery discipline as heartbeatLoop: only advance the metadata /
+                // device / identity-upgrade baselines once THIS beat is acked (a dropped beat re-carries).
+                beat.PendingUserMetadataJson = pendingMetadataJson;
+                beat.PendingUserMetadataEpoch = metadataEpoch;
+                beat.CarriedDevice = carriedDevice;
+                beat.PendingPriorUserId = pendingPriorUserId;
+                enqueueOutbound(beat);
+            }
+            catch (System.Exception e) { TombstackLog.Warn("on-demand heartbeat failed: " + e.Message); }
         }
 
         // True once a heartbeat carrying the device snapshot was ACKED this session/boot — the
