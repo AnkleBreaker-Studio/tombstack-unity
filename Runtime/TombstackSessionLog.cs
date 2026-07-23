@@ -33,6 +33,9 @@ namespace AnkleBreaker.Tombstack
         private const string LEGACY_CURRENT_LOG_NAME = "session.log";
         private const string LEGACY_PREVIOUS_LOG_NAME = "previous-session.log";
         private const string SESSION_LOG_PREFIX = "session-";
+        // Synthetic session-id prefix for migrated legacy logs (see migrateLegacyLogsLocked). Ids with
+        // this prefix are NOT real session ids and are excluded from retainedSessions advertisement.
+        private const string LEGACY_SESSION_ID_PREFIX = "legacy-";
         private const string SESSION_LOG_EXTENSION = ".log";
         private const string SESSION_LOG_GLOB = SESSION_LOG_PREFIX + "*" + SESSION_LOG_EXTENSION;
         private const int MAX_LOG_BYTES = 512 * 1024;
@@ -110,13 +113,19 @@ namespace AnkleBreaker.Tombstack
                     // All session logs EXCLUDING the current one, newest write first.
                     var priorFiles = enumeratePriorLogsNewestFirstLocked();
 
-                    // The single most-recent prior log is "the previous session".
-                    _previousPath = priorFiles.Count > 0 ? priorFiles[0] : null;
-
                     // Keep only the newest (N-1) PRIOR logs alongside the current one → at most N files.
                     // (The current session's own log counts toward the N budget.)
                     int keepPrior = _retainedLogs - 1;
                     if (keepPrior < 0) keepPrior = 0;
+
+                    // The single most-recent prior log is "the previous session" — but ONLY if we're
+                    // actually keeping at least one prior log. At retention=1 (keepPrior==0) the prune
+                    // loop below deletes EVERY prior file, so there is no surviving previous-session log:
+                    // null it out and report no-previous, otherwise the unclean-shutdown path would
+                    // claim/presign a file we're about to delete. Keeps the returned bool + _previousPath
+                    // consistent for every retention ≥ 1.
+                    _previousPath = (keepPrior > 0 && priorFiles.Count > 0) ? priorFiles[0] : null;
+
                     for (int i = keepPrior; i < priorFiles.Count; i++)
                     {
                         try { File.Delete(priorFiles[i]); }
@@ -130,7 +139,10 @@ namespace AnkleBreaker.Tombstack
                     for (int i = 0; i < keptCount; i++)
                     {
                         var id = sessionIdFromPath(priorFiles[i]);
-                        if (!string.IsNullOrEmpty(id)) ids.Add(id);
+                        // Skip synthetic legacy ids ("legacy-current"/"legacy-previous"): they are not
+                        // real session ids, so a server-side pull can never target them. Advertising them
+                        // in retainedSessions is dead wire — only expose ids a pull could actually match.
+                        if (!string.IsNullOrEmpty(id) && !isSyntheticSessionId(id)) ids.Add(id);
                     }
                     _retainedPriorSessionIds = ids.ToArray();
 
@@ -197,11 +209,18 @@ namespace AnkleBreaker.Tombstack
             if (chunk != null) flushChunk(chunk);
         }
 
-        /// <summary>Read the current session log (flushed first) for a crash/bug log upload.</summary>
+        /// <summary>Read the current session log (flushed first) for a crash/bug log upload.
+        /// The read is taken under <see cref="_fileLock"/> because a ThreadPool flush append
+        /// (<see cref="flushChunk"/>) can be writing the SAME file concurrently — reading it unlocked
+        /// races that append (torn/partial bytes). Previous/other-session reads target non-current
+        /// files no flush touches, so they stay unlocked.</summary>
         internal static bool TryReadCurrentLog(out byte[] bytes)
         {
             FlushNow();
-            return tryRead(_currentPath, out bytes);
+            lock (_fileLock)
+            {
+                return tryRead(_currentPath, out bytes);
+            }
         }
 
         /// <summary>Read the most-recent PRIOR session log for an unclean-shutdown upload.</summary>
@@ -417,6 +436,15 @@ namespace AnkleBreaker.Tombstack
                 if (sb.Length >= MAX_SESSION_ID_FILENAME) break;
             }
             return sb.Length == 0 ? "unknown" : sb.ToString();
+        }
+
+        /// <summary>True when <paramref name="sessionId"/> is a synthetic id minted by the legacy-file
+        /// migration (<c>legacy-current</c> / <c>legacy-previous</c>) rather than a real session id. Such
+        /// ids must never be advertised in retainedSessions — no server pull can target them.</summary>
+        private static bool isSyntheticSessionId(string sessionId)
+        {
+            return !string.IsNullOrEmpty(sessionId)
+                   && sessionId.StartsWith(LEGACY_SESSION_ID_PREFIX, StringComparison.Ordinal);
         }
 
         private static int clampRetained(int value)

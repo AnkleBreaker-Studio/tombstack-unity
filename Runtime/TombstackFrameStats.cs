@@ -35,7 +35,8 @@ namespace AnkleBreaker.Tombstack
         private static int _subFrames;
         private static float _subElapsedSeconds;
         private static readonly float[] _subSamples = new float[MAX_SUBSAMPLES];
-        private static int _subCount;
+        private static int _subCount;   // filled slots (≤ MAX_SUBSAMPLES)
+        private static int _subWrite;   // ring write cursor (next slot; wraps at MAX_SUBSAMPLES)
 
         /// <summary>Accumulate one frame. Called once per frame with <c>Time.unscaledDeltaTime</c>
         /// (unscaled so a paused/slow-motion timeScale never fakes a slow frame). Allocation-free.</summary>
@@ -62,14 +63,22 @@ namespace AnkleBreaker.Tombstack
             }
         }
 
-        /// <summary>Record the current sub-window's average FPS (clamped) into the fixed buffer, dropping
-        /// the oldest silently once full so a very long beat can't grow the series unbounded.</summary>
+        /// <summary>Record the current sub-window's average FPS (clamped) into the fixed ring buffer.
+        /// Once full it OVERWRITES the oldest window so the series keeps the LATEST MAX_SUBSAMPLES
+        /// windows (a true drop-oldest ring) rather than dropping incoming samples. With the default
+        /// 60s beat only ~3 windows occur, so the buffer never fills; the ring only matters for a
+        /// custom interval > MAX_SUBSAMPLES × 20s (i.e. > 120s), where it keeps the freshest windows.
+        /// Allocation-free: writes into the fixed buffer, no shifting.</summary>
         private static void captureSubSample()
         {
             if (_subFrames <= 0 || _subElapsedSeconds <= 0f) return;
             float fps = _subFrames / _subElapsedSeconds;
             if (fps > MAX_FPS) fps = MAX_FPS;
-            if (_subCount < MAX_SUBSAMPLES) _subSamples[_subCount++] = fps;
+            // Ring write: _subWrite is the next slot; wraps at MAX_SUBSAMPLES. _subCount tops out at
+            // MAX_SUBSAMPLES (buffer full). The drain (ConsumeJson) reads oldest→newest from the ring.
+            _subSamples[_subWrite] = fps;
+            _subWrite = (_subWrite + 1) % MAX_SUBSAMPLES;
+            if (_subCount < MAX_SUBSAMPLES) _subCount++;
         }
 
         /// <summary>
@@ -97,7 +106,10 @@ namespace AnkleBreaker.Tombstack
             captureSubSample();
             var subCount = _subCount;
             var samples = new float[subCount];
-            for (int i = 0; i < subCount; i++) samples[i] = _subSamples[i];
+            // Copy oldest→newest out of the ring. When the buffer never wrapped (_subCount <
+            // MAX_SUBSAMPLES) the oldest is at index 0; when full, the oldest is at the write cursor.
+            int oldest = (subCount < MAX_SUBSAMPLES) ? 0 : _subWrite;
+            for (int i = 0; i < subCount; i++) samples[i] = _subSamples[(oldest + i) % MAX_SUBSAMPLES];
             reset();
             var core = string.Format(
                 CultureInfo.InvariantCulture,
@@ -127,6 +139,7 @@ namespace AnkleBreaker.Tombstack
             _subFrames = 0;
             _subElapsedSeconds = 0f;
             _subCount = 0;
+            _subWrite = 0;
         }
     }
 }

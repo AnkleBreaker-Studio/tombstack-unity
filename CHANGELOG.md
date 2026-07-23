@@ -2,6 +2,30 @@
 
 All notable changes to `com.anklebreaker.tombstack`.
 
+## [0.19.1] - 2026-07-23
+### Fixed
+- Audit hardening (2026-07-23 SDK pass), behavior-additive, no API change.
+- **Unclean-shutdown log at retention = 1.** With `RetainedLaunchLogs` set to 1, session rotation
+  deleted the previous-session log yet still reported a previous session existed, leaving the
+  unclean-shutdown path to advertise/presign a file that was already gone. It now correctly reports
+  no previous log at retention = 1.
+- **Lifecycle heartbeats now sent directly.** The on-demand background/quit heartbeat (and
+  `SendHeartbeatNow()`) previously only enqueued the beat, but the outbound queue is drained solely by
+  the per-frame `Update` — which never runs after quit and only runs at resume after pause — so the
+  quit beat was dead and the pause beat late. The beat is now issued directly (best-effort; on quit
+  the request may not complete before the process exits). The final event/metric batch on quit is
+  likewise flushed directly.
+- **Fulfil POSTs no longer persisted for retry.** A pull-request fulfil that failed on its final
+  in-session attempt was written to the offline queue, but its short-lived nonce/presign guarantees a
+  next-launch 403 (poison drop); fulfils are now exempted from persistence, like log PUTs.
+- **`fpsSamples` keeps the latest windows.** The intra-beat FPS series is now a true drop-oldest ring
+  (only relevant for custom heartbeat intervals over 120s), instead of silently dropping incoming
+  samples once full.
+- **Session-log read locking.** Reading the current session log now takes the file lock so it can't
+  race the background flush append (torn/partial reads).
+- **No synthetic retained-session ids advertised.** Migrated legacy logs (`legacy-*`) are no longer
+  listed in the heartbeat `retainedSessions`, where no server pull could ever target them.
+
 ## [0.19.0] - 2026-07-22
 ### Added
 - **Crash `kind` classification on the wire.** Reports now carry an optional `kind` so the dashboard

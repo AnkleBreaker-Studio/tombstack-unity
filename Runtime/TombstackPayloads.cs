@@ -63,7 +63,9 @@ namespace AnkleBreaker.Tombstack
         /// managed Unity-log exceptions / <see cref="Tombstack.ReportException"/> / unobserved-Task /
         /// AppDomain paths → "exception"; the synthetic unclean-shutdown report → "unclean_shutdown";
         /// a real process death enriched by the OS exit reason (see <see cref="crashType"/>) → "crash".
-        /// Plain optional string — "" (absent) makes the server derive the kind (back-compat).</summary>
+        /// Plain optional string. When absent OR "" the server derives the kind (JsonUtility emits ""
+        /// for a null field; the server preprocesses "" → undefined, then derives). Otherwise it must
+        /// be exactly one of crash | exception | unclean_shutdown.</summary>
         public string kind;
         /// <summary>v0.17 OS exit-reason enrichment (unclean-shutdown reports only). Coarse cause:
         /// oom | anr | signal | native_crash | … — "" on ordinary crashes (server cleans to absent).</summary>

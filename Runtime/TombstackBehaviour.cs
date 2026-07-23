@@ -316,14 +316,32 @@ namespace AnkleBreaker.Tombstack
         {
             try
             {
-                FlushBatches();
-                // v0.19: best-effort on-demand quit beat. Fire-and-forget — it joins the outbound queue
-                // but UnityWebRequest can't complete synchronously on quit, so a lost quit-beat is
-                // acceptable (beats are ephemeral; the session already beat while live).
+                // Send the final batches DIRECTLY (not via the outbound queue): Update won't run again
+                // after quit, so an enqueued batch would never drain. Same best-effort caveat as the
+                // quit beat — a quitting process may not finish the request; a PersistOnFailure batch
+                // that does fail is written to disk and retried next launch.
+                flushBatchDirect(_eventBatch, EVENTS_BATCH_PATH);
+                flushBatchDirect(_metricBatch, METRICS_BATCH_PATH);
+                // v0.19: best-effort on-demand quit beat, sent directly (see SendHeartbeatNow). The
+                // request is issued synchronously up to the first yield, so it's in flight before the
+                // process dies; a quit-beat that doesn't complete is acceptable (beats are ephemeral).
                 SendHeartbeatNow();
             }
             catch (System.Exception e) { TombstackLog.Warn("flush failed: " + e.Message); }
             TombstackAppHang.Stop();
+        }
+
+        /// <summary>Drain one batch and send its envelope DIRECTLY via <c>StartCoroutine(send(...))</c>
+        /// (mirrors <see cref="flushOne"/> but bypasses the outbound queue for the quit path, where
+        /// <see cref="Update"/> will never drain the queue again). PersistOnFailure durability is kept,
+        /// so a failed send still persists to disk and retries next launch. Fail-silent.</summary>
+        private void flushBatchDirect(TombstackBatch batch, string path)
+        {
+            if (!Tombstack.CollectingStarted || !batch.HasItems) return;
+            var envelope = batch.DrainEnvelope(DateTime.UtcNow.ToString("yyyy-MM-ddTHH:mm:ss.fffZ"));
+            if (envelope == null) return;
+            _lastFlushAtSeconds = monotonic();
+            StartCoroutine(send(PendingUpload.Post(path, envelope, UploadDurability.PersistOnFailure, null, false, false)));
         }
 
         private void loadPersistedQueue()
@@ -394,9 +412,16 @@ namespace AnkleBreaker.Tombstack
         /// (CaptureAllowed &amp;&amp; HeartbeatsEnabled &amp;&amp; CollectingStarted) and enqueued
         /// <see cref="UploadDurability.Ephemeral"/> (identical to the periodic beat: a missed beat is
         /// stale data, never retried). NOT a schema change — the server treats it as a normal beat and
-        /// dedupes per (game, session), so no CCU double-count. Fires the beat through the normal
-        /// outbound queue (drained on the main thread); on quit the request may not complete before the
-        /// process dies — that lost quit-beat is acceptable (beats are ephemeral). Fail-silent.
+        /// dedupes per (game, session), so no CCU double-count. Sends the beat DIRECTLY via
+        /// <c>StartCoroutine(send(beat))</c> — exactly like the periodic loop — instead of enqueueing:
+        /// the outbound queue is drained ONLY by <see cref="Update"/>, which never runs again after
+        /// <see cref="OnApplicationQuit"/> and only runs at RESUME after <see cref="OnApplicationPause"/>,
+        /// so an enqueued lifecycle beat would be dead-on-quit and late-on-pause. StartCoroutine runs
+        /// synchronously up to the first yield, so the UnityWebRequest IS issued before the app suspends.
+        /// This is genuinely best-effort on quit: a quitting process may not finish the in-flight request
+        /// before it dies — that lost quit-beat is acceptable (beats are ephemeral; the session already
+        /// beat while live). Bypasses the _inFlight cap like the periodic loop's send. Fail-silent.
+        /// Must be called on the main thread (StartCoroutine + the frame-stats read are main-thread only).
         /// </summary>
         internal static void SendHeartbeatNow()
         {
@@ -417,7 +442,11 @@ namespace AnkleBreaker.Tombstack
                 beat.PendingUserMetadataEpoch = metadataEpoch;
                 beat.CarriedDevice = carriedDevice;
                 beat.PendingPriorUserId = pendingPriorUserId;
-                enqueueOutbound(beat);
+                // Send directly (mirrors heartbeatLoop's `yield return send(beat)`), NOT enqueueOutbound —
+                // the queue never drains after quit / drains late after pause, so an enqueued lifecycle
+                // beat is dead-on-quit and late-on-pause. StartCoroutine issues the request synchronously
+                // up to the first yield, so it's actually in flight before the app suspends.
+                inst.StartCoroutine(inst.send(beat));
             }
             catch (System.Exception e) { TombstackLog.Warn("on-demand heartbeat failed: " + e.Message); }
         }
@@ -558,6 +587,13 @@ namespace AnkleBreaker.Tombstack
         private static bool isIngestPath(string path)
             => path != null && path.StartsWith("/api/v1/ingest/", StringComparison.Ordinal);
 
+        /// <summary>True for a pull-request FULFIL POST (<c>/api/v1/pull-requests/{id}/fulfill</c>).
+        /// These carry a short-TTL nonce + presign, so an offline-persisted retry on the next launch is
+        /// guaranteed to fail (403) — they must NOT be persisted (SDK-5), exactly like log PUTs.</summary>
+        private static bool isFulfilPath(string path)
+            => path != null && path.StartsWith(PULL_REQUESTS_PATH, StringComparison.Ordinal)
+               && path.EndsWith("/fulfill", StringComparison.Ordinal);
+
         /// <summary>
         /// §K1: after a successful ingest POST, emit the round-trip time as a <c>tombstack.rtt_ms</c>
         /// metric via the normal TrackMetric batch path. Opt-in via <see cref="Tombstack.AutoRttMetricEnabled"/>
@@ -680,8 +716,12 @@ namespace AnkleBreaker.Tombstack
                 }
 
                 // Final in-session failure: make sure it survives to the next launch.
-                // (Log PUTs are exempt: the presigned URL will have expired by then.)
-                if (item.FilePath == null && !item.IsLogPut) persist(item);
+                // (Log PUTs are exempt: the presigned URL will have expired by then. Pull-request
+                // FULFIL POSTs are exempt for the same reason — the fulfil nonce has a short TTL
+                // (~120s), so a next-launch retry is guaranteed a 403 → poison drop; and PersistedRecord
+                // carries no TargetSessionId, so a restored past-session fulfil would read the wrong
+                // log. SDK-5: don't persist fulfils.)
+                if (item.FilePath == null && !item.IsLogPut && !isFulfilPath(item.Path)) persist(item);
             }
             catch (Exception e)
             {

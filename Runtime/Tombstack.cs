@@ -991,6 +991,8 @@ namespace AnkleBreaker.Tombstack
         /// (consent + heartbeats enabled + <see cref="StartSession"/> reached) and best-effort /
         /// ephemeral — a beat that can't be delivered (e.g. the process dies mid-send on quit) is
         /// simply lost, never retried. Fail-silent; never throws into game code.
+        /// <para>Must be called on the MAIN thread: building the beat reads per-frame frame stats
+        /// (TombstackFrameStats) and starts a coroutine, both of which are main-thread only.</para>
         /// </summary>
         public static void SendHeartbeatNow()
         {
