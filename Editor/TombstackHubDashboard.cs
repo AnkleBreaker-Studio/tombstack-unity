@@ -159,10 +159,20 @@ namespace AnkleBreaker.Tombstack.Editor
         {
             if (_crashFreeLabel != null)
             {
-                _crashFreeLabel.text = summary.crashFreePct.ToString("0.0") + "%";
-                bool good = summary.crashFreePct >= 99f;
+                // "Unknown" is a THIRD state, not a number. A game with no session denominator (no
+                // heartbeats yet, or SendHeartbeats off — which TombstackConfigSO documents as blanking
+                // this stat) has nothing to measure: 0.0% reads as "every session crashes" and 100% as
+                // a clean bill of health. Show an em dash, styled neither good nor bad.
+                //
+                // Accept EITHER signal: crashFreeKnown is authoritative against a 2026-07-25+ server,
+                // and the >= 0f check keeps a real percentage displaying against an older server that
+                // does not send the flag at all (where the bool would default to false).
+                bool known = summary.crashFreeKnown || summary.crashFreePct >= 0f;
+                _crashFreeLabel.text = known ? summary.crashFreePct.ToString("0.0") + "%" : "—";
+                bool good = known && summary.crashFreePct >= 99f;
+                bool bad = known && summary.crashFreePct < 99f;
                 _crashFreeLabel.EnableInClassList("tmb-stat__value--good", good);
-                _crashFreeLabel.EnableInClassList("tmb-stat__value--bad", !good);
+                _crashFreeLabel.EnableInClassList("tmb-stat__value--bad", bad);
             }
             if (_crashes24hLabel != null) _crashes24hLabel.text = summary.totalCrashes24h.ToString();
             if (_crashes7dLabel != null) _crashes7dLabel.text = summary.totalCrashes7d.ToString();

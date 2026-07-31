@@ -43,7 +43,15 @@ namespace AnkleBreaker.Tombstack
         // queue). A game spamming TrackEvent while offline must not grow it without bound.
         private const int MAX_OUTBOUND_QUEUE = 256;
         private const float MIN_HEARTBEAT_INTERVAL_SECONDS = 15f;
-        private const float MAX_HEARTBEAT_INTERVAL_SECONDS = 600f;
+        // MUST stay comfortably below the server's session window (SESSION_WINDOW_MS in
+        // src/lib/billing.ts, 5 min): a heartbeat keeps its session "alive" for that long, and consecutive
+        // beats merge into one active span only while the gap does not exceed it. Configured above the
+        // window, a session blinks out between its own beats — which UNDER-counts live CCU and the monthly
+        // peak the studio is BILLED on, silently and in proportion to the overshoot. This was 600s, twice
+        // the window, so the SDK allowed a studio to configure its own billing metric wrong. 240s leaves a
+        // minute of headroom for scheduling jitter and upload latency.
+        // tests/heartbeat-cadence.test.ts reads this constant and fails if the two ever drift apart.
+        private const float MAX_HEARTBEAT_INTERVAL_SECONDS = 240f;
         private const long HTTP_REQUEST_TIMEOUT = 408;
         private const long HTTP_TOO_MANY_REQUESTS = 429;
         private const string QUEUE_DIR_NAME = "Tombstack";
@@ -373,7 +381,6 @@ namespace AnkleBreaker.Tombstack
 
         private IEnumerator heartbeatLoop()
         {
-            var wait = new WaitForSeconds(_heartbeatIntervalSeconds);
             while (true)
             {
                 // Consent-gated like every other capture; resumes when SetConsent(true) is called.
@@ -401,7 +408,12 @@ namespace AnkleBreaker.Tombstack
                         yield return send(beat);
                     }
                 }
-                yield return wait;
+                // Realtime, not WaitForSeconds: a pause menu sets Time.timeScale = 0, which would freeze
+                // this loop and drop the player out of the server's 300s session window while they are
+                // still there — understating the peak CCU the studio is billed on. Constructed per
+                // iteration because WaitForSecondsRealtime latches its deadline at construction; cached
+                // above the loop, every yield after the first returns instantly.
+                yield return new WaitForSecondsRealtime(_heartbeatIntervalSeconds);
             }
         }
 
@@ -903,7 +915,9 @@ namespace AnkleBreaker.Tombstack
         {
             float delay = RETRY_BASE_DELAY_SECONDS * (1 << item.Attempt);
             item.Attempt++;
-            yield return new WaitForSeconds(delay);
+            // Realtime for the same reason as the heartbeat loop: an upload backoff is wall-clock, and a
+            // paused game must not park a pending crash report indefinitely.
+            yield return new WaitForSecondsRealtime(delay);
             enqueueOutbound(item);
         }
 

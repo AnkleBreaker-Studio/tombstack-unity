@@ -172,6 +172,14 @@ namespace AnkleBreaker.Tombstack
 
         private static volatile bool _initialized;
         private static volatile bool _consent = true;
+
+        // Set once game code calls SetConsent, so auto-init cannot revert an explicit runtime
+        // decision back to the config asset's RequireConsent default. Consent may legitimately be
+        // granted from SubsystemRegistration or AfterAssembliesLoaded, both of which run BEFORE the
+        // BeforeSceneLoad auto-init — without this latch that grant was silently reverted and
+        // CaptureAllowed stayed false, dropping crashes as well as telemetry.
+        // (Same precedent as _environmentExplicit and _captureOverridden.)
+        private static volatile bool _consentExplicit;
         // v0.15: send gate — the SDK sends NOTHING (heartbeats + event/metric batches) until the game
         // calls StartSession() or Init auto-starts it. Lets the game set user identity / environment /
         // metadata FIRST so the first heartbeat isn't anonymous + production. One-way latch (never
@@ -491,8 +499,11 @@ namespace AnkleBreaker.Tombstack
             {
                 var config = Resources.Load<TombstackConfigSO>("TombstackConfig");
                 if (config == null || !config.AutoInitOnLoad) return;
-                // When consent is required, start disabled until the game calls SetConsent(true).
-                _consent = !config.RequireConsent;
+                // When consent is required, start disabled until the game calls SetConsent(true) —
+                // unless the game ALREADY called SetConsent. Consent can legitimately be granted
+                // from SubsystemRegistration or AfterAssembliesLoaded, both of which run before
+                // this BeforeSceneLoad hook; reverting it there silently dropped crashes too.
+                if (!_consentExplicit) _consent = !config.RequireConsent;
                 // Config values apply only where game code has NOT already called
                 // SetCaptureEnabled for that category — an explicit runtime override (even one
                 // made before auto-init runs) always wins over the config asset.
@@ -953,6 +964,9 @@ namespace AnkleBreaker.Tombstack
         {
             bool wasGranted = _consent;
             _consent = granted;
+            // Latch the explicit decision so a later auto-init cannot revert it to the config
+            // asset's RequireConsent default (see _consentExplicit).
+            _consentExplicit = true;
             try
             {
                 // Consent arriving after Init starts the deferred session tracking (marker

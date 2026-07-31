@@ -122,8 +122,21 @@ namespace AnkleBreaker.Tombstack.Editor
     [Serializable]
     public class EditorGameSummaryData
     {
-        /// <summary>Crash-free session percentage (0–100).</summary>
+        /// <summary>
+        /// Crash-free session percentage (0–100), or -1 when UNKNOWN. Check <see cref="crashFreeKnown"/>
+        /// before displaying: a game with no session denominator (no heartbeats yet, or
+        /// <c>SendHeartbeats</c> disabled) has nothing to measure, and rendering 0 there reads as
+        /// "every session crashes" while rendering 100 reads as a clean bill of health. Neither is true.
+        /// </summary>
         public float crashFreePct;
+
+        /// <summary>
+        /// False when <see cref="crashFreePct"/> carries the -1 "unknown" sentinel. Servers older than
+        /// 2026-07-25 omit this field, so it parses as <c>false</c> against them — which is why the
+        /// display site also accepts a plain non-negative <see cref="crashFreePct"/> rather than
+        /// trusting this flag alone.
+        /// </summary>
+        public bool crashFreeKnown;
         /// <summary>Total crashes in the last 24 hours.</summary>
         public long totalCrashes24h;
         /// <summary>Total crashes in the last 7 days.</summary>

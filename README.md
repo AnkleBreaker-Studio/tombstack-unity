@@ -19,9 +19,11 @@ cases with **zero further integration**:
 | Errors / warnings / logs as breadcrumbs | ✅ Automatic | Every Unity log line → 50-entry ring, attached to crashes & bug reports |
 | Player log upload on crash | ✅ Automatic | Rolling ~512 KB `session.log`, PUT to a presigned URL after the crash report's 2xx |
 | Screenshot attachment | ✅ Automatic (bug reports; opt-in on exceptions) | End-of-frame capture, downscaled (config cap, default 1280 px), uploaded via the presigned `screenshotUpload` after the report's 2xx — ON by default for bug reports; exception screenshots are opt-in + throttled |
-| Unclean shutdown (hard crash / OOM kill / force quit) | ✅ Automatic (next launch) | `session.lock` marker + preserved `previous-session.log`, reported as signature `unclean-shutdown` |
-| Session heartbeats / CCU | ✅ Automatic | Every N seconds (default 60) |
-| Per-session frame stats (0.11+) | ✅ Automatic | Each heartbeat carries the interval's `fpsAvg` / `slowFramePct` (> 33.4 ms) / `hitchCount` (> 250 ms) / `worstFrameMs` — sampled allocation-free, omitted when no frame ran (headless servers) |
+| Unclean shutdown (hard crash / OOM kill / force quit) | ✅ Automatic (next launch) | `session.lock` marker + a retained past session log, reported as signature `unclean-shutdown` |
+| Real OS exit reason on unclean shutdown (0.17+, Android 11+) | ✅ Automatic | The session marker persists the process id; at next launch the SDK asks Android `ApplicationExitInfo` what killed that exact process and enriches the synthetic report with a real cause (`oom-kill` / `anr-kill` / `native-signal-<n>` / `native-crash` / …) plus wire fields `crashType` / `osExitReason` / `osSignal` / `rssAtDeathBytes`. User force-stop / self-exit / permission-change deaths are no longer reported at all. Fail-soft: pre-Android-11, non-Android, or any lookup failure keeps the pre-0.17 heuristic |
+| Crash `kind` classification (0.19+) | ✅ Automatic | Reports carry an optional `kind` (`crash` / `exception` / `unclean_shutdown`) so the dashboard labels them accurately — no API: managed exceptions → `exception`; a genuine process death with a real OS exit reason → `crash`; the synthetic next-launch report → `unclean_shutdown`. Absent → the server derives it |
+| Session heartbeats / CCU | ✅ Automatic | Every N seconds (default 60), plus an on-demand beat on **background (minimize)** and (best-effort) **quit** (0.19+) so live CCU / liveness stay tight without waiting for the next tick |
+| Per-session frame stats (0.11+) | ✅ Automatic | Each heartbeat carries the interval's `fpsAvg` / `slowFramePct` (> 33.4 ms) / `hitchCount` (> 250 ms) / `worstFrameMs` — sampled allocation-free, omitted when no frame ran (headless servers). A finer **20s `fpsSamples` series** (0.18+) is folded into the same 60s beat (no extra rows / ingest cost) |
 | App-hang detection (0.11+) | ✅ Automatic | Background watchdog; a main-thread stall > threshold (default 5s) reports one `tmb.app_hang` event (duration, scene, threshold) **on recovery** + a Warning breadcrumb — ≤1/min; no cross-thread stack (hangs group by scene) |
 | Offline durability + retry | ✅ Automatic | Write-ahead queue, exponential backoff, next-launch retry |
 | Event + metric batching (§16) | ✅ Automatic | `TrackEvent`/`TrackMetric` accumulate in a bounded, preallocated, drop-oldest buffer (cap 256) and flush as one batch on count ≥ 50 / age ≥ 10s / near-full / pause / quit / pre-crash |
@@ -31,6 +33,7 @@ cases with **zero further integration**:
 | Player bug reports (log attached automatically) | One-liner | `Tombstack.ReportBug("…", category)` |
 | Manual breadcrumbs | One-liner | `Tombstack.AddBreadcrumb("…", level, category)` |
 | Caught-but-interesting exceptions | One-liner | `Tombstack.ReportException(ex)` |
+| Immediate heartbeat for a custom lifecycle moment (0.19+) | One-liner | `Tombstack.SendHeartbeatNow()` — **main-thread only**; the SDK already sends one automatically on background + quit |
 | Server-triggered log pull — client honouring | ✅ Automatic | The heartbeat ack carries pull requests; a **consenting**, **targeted** client uploads its rolling session log via the existing presigned-log path, off-thread. A non-consenting client never uploads. |
 | Server-side log pull (request a player's logs) | One-liner | `Tombstack.RequestPlayerLogs(...)` / `Tombstack.OnAnomalousDisconnect(userId, reason)` (write-scoped server token) |
 
@@ -40,6 +43,7 @@ Every autonomy system has its own toggle on the config asset — all default ON:
 |---|---|
 | `Auto Capture Exceptions` | Automatic exception capture (Unity log + unobserved Task + AppDomain); manual `ReportException` always works |
 | `Upload Logs` | The rolling session log + its crash/bug uploads |
+| `Retain Launch Logs` (0.18+) | How many recent per-launch logs to keep on disk, keyed by session id (default **3**, clamped 1–10). Enables server log pulls to reach a specific PAST session — even a player who has since disconnected. Also settable via `Tombstack.Init(..., retainedLaunchLogs)` |
 | `Detect Unclean Shutdown` | The session-marker dirty-session detection on next launch |
 | `Auto Scene Breadcrumbs` | Automatic breadcrumbs on scene load / active-scene change |
 | `Send Heartbeats` (0.12+) | The heartbeat loop — **OFF logs a warning: live CCU, sessions, crash-free %, fleet, user metadata, and log pulls go dark** |
@@ -57,13 +61,13 @@ reported until `Tombstack.SetConsent(true)`.
 **Via UPM git URL** (public mirror) — Window ▸ Package Manager ▸ `+` ▸ *Add package from git URL…*:
 
 ```
-https://github.com/AnkleBreaker-Studio/tombstack-unity.git#v0.12.0
+https://github.com/AnkleBreaker-Studio/tombstack-unity.git#v0.19.1
 ```
 
 Or add to `Packages/manifest.json`:
 
 ```jsonc
-{ "dependencies": { "com.anklebreaker.tombstack": "https://github.com/AnkleBreaker-Studio/tombstack-unity.git#v0.12.0" } }
+{ "dependencies": { "com.anklebreaker.tombstack": "https://github.com/AnkleBreaker-Studio/tombstack-unity.git#v0.19.1" } }
 ```
 
 Or copy `unity/` into your project's `Packages/`. Requires Unity **6 (6000.0)+** (Mono and IL2CPP).
@@ -146,13 +150,30 @@ try { Load(); } catch (Exception e) { Tombstack.ReportException(e); }
 - **Unclean shutdowns**: Init writes `Tombstack/session.lock`; a clean quit
   (`Application.quitting`) removes it. If a marker survives to the next launch, the previous
   session died hard (native crash, OOM kill, force quit) — the SDK reports a synthetic crash
-  (signature `unclean-shutdown`, previous session's buildVersion/os/arch) and uploads the
-  preserved `previous-session.log`. If the write-ahead queue already held a managed crash from
-  that session, no synthetic report is sent (no double-counting) — the restored crash's retry
-  carries the previous log instead.
+  (signature `unclean-shutdown`, previous session's buildVersion/os/arch) and uploads that
+  session's retained log. On **Android 11+ (0.17+)** it additionally asks
+  `ApplicationExitInfo` what killed that exact process and enriches the report with a real
+  cause (`oom-kill` / `anr-kill` / `native-signal-<n>` / `native-crash` / …) plus wire fields
+  `crashType`/`osExitReason`/`osSignal`/`rssAtDeathBytes`; a death the OS attributes to a user
+  force-stop, self-exit, or permission change is not reported at all. Fail-soft — pre-Android-11,
+  non-Android, or any lookup failure keeps the pre-0.17 heuristic. If the write-ahead queue
+  already held a managed crash from that session, no synthetic report is sent (no
+  double-counting) — the restored crash's retry carries the previous log instead.
+- **Crash `kind` classification (0.19+)**: reports carry an optional `kind` — `exception` for
+  managed exceptions (Unity `LogType.Exception`, `ReportException`, unobserved-Task, AppDomain),
+  `unclean_shutdown` for the synthetic next-launch report, or `crash` when the OS gave a real
+  exit reason (a genuine process death). Fully automatic (no API); absent → the server derives
+  the kind (back-compatible).
 - **Session heartbeats** → `POST /api/v1/ingest/heartbeats` every N seconds (default 60,
-  clamped 15–600) with `sessionId`/`buildVersion`/`os`/`arch`/`userId` — feeds the Live
-  Fleet/CCU, Sessions, and Releases screens.
+  clamped **15–240**; the upper bound sits inside the server's 5-minute session window on purpose —
+  beat more slowly and sessions blink out between their own beats, understating live CCU and the peak
+  concurrency you are billed on) with `sessionId`/`buildVersion`/`os`/`arch`/`userId` — feeds the Live
+  Fleet/CCU, Sessions, and Releases screens. Since **0.19** the SDK also fires an on-demand
+  beat when the app is **backgrounded (minimize)** and best-effort on **quit** (and exposes
+  `Tombstack.SendHeartbeatNow()` for custom lifecycle moments — **main-thread only**), so
+  liveness stays tight between ticks without any CCU double-count (the server dedupes a session
+  per game). A 20s intra-beat `fpsSamples` series (0.18+) rides the same 60s beat for sub-beat
+  FPS at no extra ingest cost.
 - **Analytics events** → `Tombstack.TrackEvent(name, props)` (flat attributes, clamped to the
   server contract: ≤32 entries, 64-char keys, 512-char values).
 - **Numeric metrics** → `Tombstack.TrackMetric(name, value, unit?)` for time-series + p50/p95/p99
@@ -210,9 +231,19 @@ try { Load(); } catch (Exception e) { Tombstack.ReportException(e); }
 
 ## Public API
 ```csharp
-Tombstack.Init(gameToken, endpoint, heartbeatIntervalSeconds = 60f, environment = null);
-Tombstack.SetUser(userId, steamId = null);
+Tombstack.Init(gameToken, endpoint, heartbeatIntervalSeconds = 60f, environment = null,
+    autoStartSession = true, retainedLaunchLogs = 3);
+Tombstack.SetUser(userId, steamId = null);   // upgrades the device id in-session (0.16); SetUser(null) reverts to it
 Tombstack.SetConsent(bool granted);
+
+// Defer the first heartbeat until identity/env are set (0.15). StartSession auto-fires at Init
+// unless AutoStartSession is off (config asset, or Init(..., autoStartSession: false)); then call
+// SetUser / SetEnvironment / SetUserMetadata first, then StartSession(). Idempotent; pre-Init-safe.
+Tombstack.StartSession();
+// Send one heartbeat immediately for a custom lifecycle moment (0.19) — the SDK already does this
+// on background + quit. MAIN-THREAD ONLY (reads per-frame frame stats + starts a coroutine).
+Tombstack.SendHeartbeatNow();
+
 Tombstack.TrackEvent(name, Dictionary<string,string> props = null);
 Tombstack.TrackMetric(name, double value, string unit = null);
 Tombstack.SetSampleRate(name, float rate0to1);   // per-name keep-probability for events/metrics
@@ -254,6 +285,7 @@ TombstackDiagnostics diag = Tombstack.GetDiagnostics();
 // diag.Environment / Region / Hostname / UserMetadataKeyCount
 
 // Multiplayer correlation context (dedicated servers)
+Tombstack.MarkDedicatedServer(serverId, region = null, hostname = null); // 0.13: declare a server at boot (matchless servers still register in the fleet)
 Tombstack.SetMatchContext(serverId, matchId);
 Tombstack.SetServerInfo(region, hostname);  // fleet labels; server-lifetime, survives EndMatch
 string matchId = Tombstack.StartMatch();   // server: flips role to "server", mints a match id
@@ -276,6 +308,8 @@ no reflection-based serialization beyond JsonUtility, no dynamic codegen.
 ## Not yet
 - Native crash core (Windows SEH / POSIX signals / Mach) + on-disk minidump upload —
   managed exceptions are covered today; native is the next track (`../native/`, plan written).
+  (On Android 11+, real OS exit reasons for unclean shutdowns already land as of 0.17; iOS
+  MetricKit is the planned counterpart.)
 - Breadcrumb `category` as a first-class wire field (currently folded into the message as a
   `[category] ` prefix — the ingest schema has no category field yet).
 

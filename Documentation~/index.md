@@ -10,11 +10,11 @@ your Tombstack account. Requires **Unity 6 (6000.0)** or newer.
 
 ### 1. Install
 
-- **Tarball (recommended):** download `com.anklebreaker.tombstack-0.12.0.tgz` from
-  `https://tombstack.com/downloads/com.anklebreaker.tombstack-0.12.0.tgz`, then
+- **Tarball (recommended):** download `com.anklebreaker.tombstack-0.19.1.tgz` from
+  `https://tombstack.com/downloads/com.anklebreaker.tombstack-0.19.1.tgz`, then
   Package Manager ▸ `+` ▸ *Add package from tarball…*
 - Or Package Manager ▸ `+` ▸ *Add package from git URL…* →
-  `https://github.com/AnkleBreaker-Studio/tombstack-unity.git#v0.12.0`
+  `https://github.com/AnkleBreaker-Studio/tombstack-unity.git#v0.19.1`
 
 ### 2. Sign in (mandatory)
 
@@ -70,11 +70,26 @@ Once initialized, the SDK needs no further integration for the common cases:
   uploads automatically to a presigned URL returned by the server.
 - **Unclean shutdowns** — if the app dies without a clean quit (hard crash, OOM kill, force
   quit), the next launch detects it via the `session.lock` marker, reports a synthetic crash
-  (signature `unclean-shutdown`), and uploads the preserved `previous-session.log`.
-- **Breadcrumbs, heartbeats, offline retry** — as before, all automatic.
+  (signature `unclean-shutdown`), and uploads that session's retained log. On **Android 11+
+  (0.17+)** the report is enriched with the real OS cause — `oom-kill` / `anr-kill` /
+  `native-signal-<n>` / `native-crash` / … via `ApplicationExitInfo` — and deaths the OS
+  attributes to a user force-stop / self-exit / permission change are not reported at all.
+  Fail-soft everywhere else (pre-Android-11, non-Android, lookup failure) → the pre-0.17 heuristic.
+- **Device identity (0.16+) — no anonymous players** — at first launch the SDK mints a
+  persistent device-derived id (`dev_` + 16 hex, SHA-256 of the device identifier salted with
+  your game token; the raw identifier never leaves the device and the same device is unlinkable
+  across games) and uses it as the `userId` until you call `SetUser(realId)`, which upgrades the
+  **same session** (a one-shot `priorUserId` merges the pre-auth telemetry into the real player).
+  `SetUser(null)` (logout) reverts to the device id.
+- **Crash `kind` (0.19+)** — reports are labelled `crash` / `exception` / `unclean_shutdown`
+  automatically (no API) so the dashboard stops calling everything a "crash".
+- **Breadcrumbs, heartbeats, offline retry** — as before, all automatic. Heartbeats also fire
+  on **background (minimize)** and best-effort on **quit** (0.19+) — and `SendHeartbeatNow()`
+  (main-thread only) is available for custom lifecycle moments.
 - **Per-session frame stats (0.11+)** — every heartbeat carries the interval's average FPS,
   slow-frame % (> 33.4 ms), hitch count (> 250 ms), and worst frame ms; omitted when no frame
-  ran (headless servers), sampled with zero per-frame allocation.
+  ran (headless servers), sampled with zero per-frame allocation. A finer **20s `fpsSamples`
+  series (0.18+)** is folded into the same 60s beat (no extra rows / ingest cost).
 - **App-hang detection (0.11+)** — a background watchdog reports a `tmb.app_hang` event
   (duration, active scene, threshold) when the main thread stalls longer than
   *App Hang Threshold Seconds* (default 5, min 2; 0 disables) and then recovers, plus a
@@ -82,14 +97,20 @@ Once initialized, the SDK needs no further integration for the common cases:
   events group by scene. Toggle via *Detect App Hangs* on the config asset.
 
 Manual one-liners: `SetUser`, `TrackEvent`, `ReportBug` (now attaches the session log),
-`AddBreadcrumb`, `ReportException`.
+`AddBreadcrumb`, `ReportException`, `SendHeartbeatNow` (0.19+, main-thread only).
+
+**Deferring the first beat (0.15+):** by default the SDK starts collecting at `Init`. To make the
+first heartbeat carry the player's identity + environment instead of `anonymous` + `production`,
+turn *Auto Start Session* off (config asset, or `Init(..., autoStartSession: false)`), configure
+via `SetEnvironment` / `SetUser` / `SetUserMetadata`, then call `Tombstack.StartSession()`. Crash
+and bug reports still send while deferred; the latch is idempotent and survives a pre-Init call.
 
 Toggles on the `TombstackConfig` asset control the autonomy systems (all default ON):
-*Auto Capture Exceptions*, *Upload Logs*, *Detect Unclean Shutdown*, *Auto Scene
-Breadcrumbs*, *Send Heartbeats* (0.12+ — OFF logs a warning: live CCU, sessions,
-crash-free %, fleet, user metadata, and log pulls go dark), *Collect Frame Stats* (0.12+),
-*Detect App Hangs* (with *App Hang Threshold Seconds*, default 5), and the two screenshot
-toggles. At runtime, `Tombstack.SetCaptureEnabled(TombstackCapture.X, bool)` (0.12+) flips
+*Auto Capture Exceptions*, *Upload Logs*, *Retain Launch Logs* (0.18+, count 1–10, default 3),
+*Detect Unclean Shutdown*, *Auto Scene Breadcrumbs*, *Send Heartbeats* (0.12+ — OFF logs a
+warning: live CCU, sessions, crash-free %, fleet, user metadata, and log pulls go dark),
+*Collect Frame Stats* (0.12+), *Detect App Hangs* (with *App Hang Threshold Seconds*, default 5),
+and the two screenshot toggles. At runtime, `Tombstack.SetCaptureEnabled(TombstackCapture.X, bool)` (0.12+) flips
 *Exceptions* / *Heartbeats* / *Breadcrumbs* / *FrameStats* / *AppHangs* live — manual
 `ReportException` and `AddBreadcrumb` always work regardless. All are consent-gated —
 with *Require consent* enabled, nothing is captured, mirrored, or reported until your game
@@ -100,7 +121,8 @@ calls `Tombstack.SetConsent(true)`.
 | File | Purpose |
 |---|---|
 | `session.log` | Rolling log of the current session (~512 KB cap, newest lines win) |
-| `previous-session.log` | The previous session's log, preserved at launch for unclean-shutdown upload |
+| `session-<sessionId>.log` (0.18+) | The last **N** per-launch logs (N = *Retain Launch Logs*, default 3), kept for unclean-shutdown upload and on-demand server log pulls of a past session. Supersedes the single `previous-session.log`; legacy `session.log`/`previous-session.log` are migrated, not lost |
+| `identity.json` (0.16+) | The persisted device-derived provisional id (`dev_…`) used until `SetUser(realId)` |
 | `session.lock` | Dirty-session marker (present while running; gone after a clean quit) |
 | `*.json` | Write-ahead upload queue (crashes/bugs that have not been delivered yet) |
 
@@ -111,7 +133,7 @@ calls `Tombstack.SetConsent(true)`.
 | Setting | Effect |
 |---|---|
 | Base URL override | Point the plugin + SDK at a self-hosted/staging Tombstack tenant. Re-link after changing it. |
-| Heartbeat (s) | Seconds between session heartbeats (written into the config asset; runtime clamps 15–600). |
+| Heartbeat (s) | Seconds between session heartbeats (written into the config asset; runtime clamps 15–240). The upper bound sits inside the server's 5-minute session window on purpose: beat more slowly and your sessions blink out between their own beats, understating live CCU and the peak concurrency you are billed on. |
 | Environment | Deployment-environment label (production / staging / …) stamped on every payload; written into the config asset. Defaults to `production`. |
 | Require consent | When on, the SDK captures nothing until your game calls `Tombstack.SetConsent(true)`. |
 | Unlink project | Clears the game binding and blanks the SDK token in the config asset. |
@@ -120,11 +142,14 @@ calls `Tombstack.SetConsent(true)`.
 ## Runtime API (summary)
 
 ```csharp
-Tombstack.Init(gameToken, endpoint, heartbeatIntervalSeconds = 60f, environment = null); // auto-called via TombstackConfig
+Tombstack.Init(gameToken, endpoint, heartbeatIntervalSeconds = 60f, environment = null,
+    autoStartSession = true, retainedLaunchLogs = 3);            // auto-called via TombstackConfig
 Tombstack.SetConsent(bool granted);
-Tombstack.SetUser(userId, steamId = null);
+Tombstack.SetUser(userId, steamId = null);                       // upgrades the device id in-session (0.16); SetUser(null) reverts to it
 Tombstack.SetUserMetadata(Dictionary<string,string> metadata);   // per-player custom metadata
 Tombstack.SetEnvironment(environment);                           // production / staging / … — wins over Init/config
+Tombstack.StartSession();                                        // 0.15: begin collecting (only needed when autoStartSession = false)
+Tombstack.SendHeartbeatNow();                                    // 0.19: one immediate beat — MAIN THREAD ONLY
 Tombstack.TrackEvent(name, Dictionary<string,string> props = null);
 Tombstack.TrackMetric(name, double value, string unit = null);
 Tombstack.SetSampleRate(name, float rate0to1);                   // per-name keep-probability
@@ -132,6 +157,7 @@ Tombstack.SetCaptureEnabled(TombstackCapture capture, bool on);  // 0.12+: toggl
 Tombstack.AddBreadcrumb(message, BreadcrumbLevel level = Info, category = null);
 Tombstack.ReportException(exception);
 Tombstack.ReportBug(message, category = null);
+Tombstack.MarkDedicatedServer(serverId, region = null, hostname = null); // 0.13: server identity without a match
 Tombstack.SetMatchContext(serverId, matchId);                    // multiplayer correlation
 Tombstack.SetServerInfo(region, hostname);                       // fleet labels
 string matchId = Tombstack.StartMatch();                         // server: flips role to "server"
@@ -140,10 +166,10 @@ Tombstack.RequestPlayerLogs(target, targetValue, reason);        // write-scoped
 TombstackDiagnostics diag = Tombstack.GetDiagnostics();          // readonly snapshot
 ```
 
-`SetEnvironment`, `TrackEvent`, and `TrackMetric` are safe to call **before** `Init`: an explicit
-`SetEnvironment` always wins over `Init`'s parameter / the config asset, and pre-init
-events/metrics are buffered (64, drop-oldest) and replayed with their original timestamps once
-the SDK initializes.
+`SetEnvironment`, `TrackEvent`, `TrackMetric`, and `StartSession` are safe to call **before**
+`Init`: an explicit `SetEnvironment` always wins over `Init`'s parameter / the config asset, and
+pre-init events/metrics are buffered (64, drop-oldest) and replayed with their original timestamps
+once the SDK initializes.
 
 See the package `README.md` for full runtime behavior (offline-first durable queue,
 breadcrumbs, consent gating, fail-silent guarantees).

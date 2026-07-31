@@ -2,6 +2,65 @@
 
 All notable changes to `com.anklebreaker.tombstack`.
 
+## [0.19.4] - 2026-07-31
+### Fixed
+- **Heartbeats no longer stop while the game is paused.** The heartbeat coroutine waited on
+  `WaitForSeconds`, which is scaled by `Time.timeScale` — so the near-universal `Time.timeScale = 0`
+  pause menu froze the beat completely. After 300s (the server's session window) the player dropped
+  out of live CCU while still sitting in that menu, and because the **monthly peak concurrency you
+  are billed on** is computed from those beats, the figure came out LOW — understated in proportion
+  to how much time your players spend paused, and worst for games with heavy pause use (inventory,
+  map, settings). The wait is now `WaitForSecondsRealtime`. No API change and nothing to configure:
+  upgrade and the peak reflects the players who were actually there. Figures before this release were
+  understated, never inflated.
+- **Upload retries no longer stall at `timeScale = 0`.** The exponential backoff between failed
+  upload attempts (2s → 32s) used the same scaled wait, so a crash report that missed its first
+  attempt could sit unretried for as long as the game stayed paused.
+
+### Note for git-mirror installs
+- The public UPM mirror served **v0.19.1** until this release, so upgrading by git URL also picks up
+  **0.19.2** (pre-init `SetConsent` no longer silently reverted — affected builds reported *nothing*)
+  and **0.19.3** (heartbeat interval clamped to 240s; hub shows `—` instead of a red `0.0%` for a game
+  with no data). Both affect capture or billing; their entries are below.
+
+## [0.19.3] - 2026-07-25
+### Fixed
+- **`HeartbeatIntervalSeconds` no longer accepts a value that under-counts your own CCU.** The clamp
+  was `[15s, 600s]`, but the server counts a session as concurrent for **5 minutes** after each
+  heartbeat, and merges consecutive beats into one continuous span only while the gap stays inside
+  that window. Configured above it, a session blinked out between its own beats — so live CCU and
+  the **monthly peak concurrency you are billed on** both came out LOW, silently, in proportion to
+  the overshoot, and worst for a game whose players launch at staggered times (which is all of them).
+  The maximum is now **240s**, a minute inside the window to absorb scheduling jitter and upload
+  latency; values above it clamp down instead of being honoured. The default (60s) is unaffected, as
+  is anything already set to 240s or below. If you deliberately chose a longer interval to save
+  bandwidth: your peak-CCU figures before this release were understated, never inflated.
+- **The hub's crash-free stat no longer shows a red "0.0%" for a game it has no data on.** The server
+  reports crash-free % as *unknown* when there is no session denominator — a game that has not sent
+  heartbeats yet, or one running with **Send Heartbeats** off (which `TombstackConfig` documents as
+  blanking this stat). `crashFreePct` is a non-nullable `float`, so an unknown value landed as `0`
+  and rendered as a red `0.0%`: "every session is crashing" for a game we in fact know nothing
+  about. The hub now renders `—`, styled neither good nor bad.
+- The wire format carries `-1` plus a new `crashFreeKnown` flag rather than a JSON `null`, so a
+  **0.19.2 or older** hub shows `-1.0%` — visibly a non-reading — instead of a plausible-looking
+  catastrophe. Upgrade to get the `—`. The display also accepts a plain non-negative percentage, so
+  a new hub still works against an older server that does not send the flag.
+
+## [0.19.2] - 2026-07-25
+### Fixed
+- **Pre-init `SetConsent` is no longer reverted by auto-init.** Consent can legitimately be granted
+  from `RuntimeInitializeLoadType.SubsystemRegistration` or `AfterAssembliesLoaded`, both of which
+  run *before* the `BeforeSceneLoad` auto-init. Auto-init then unconditionally reset consent to
+  `!RequireConsent`, so a game that granted consent early — with **Require Consent** ticked on the
+  `TombstackConfig` asset — silently fell back to "not consented". Because `CaptureAllowed` gates
+  everything, such a build reported **no crashes, no sessions and no telemetry at all**, and looked
+  identical to a platform nobody was playing. `SetConsent` now latches the explicit decision
+  (matching the existing `_environmentExplicit` / `_captureOverridden` precedents) and auto-init
+  applies the asset default only when the game has not already decided.
+  - No API change. If you were affected, capture resumes on upgrade — which also means the affected
+    game starts reporting real sessions again, so its CCU peak (and therefore billing) will reflect
+    actual play for the first time.
+
 ## [0.19.1] - 2026-07-23
 ### Fixed
 - Audit hardening (2026-07-23 SDK pass), behavior-additive, no API change.
@@ -331,7 +390,12 @@ and `ResourceFlow`.
   Unity version, scripting backend (IL2CPP/Mono), and platform. It is snapshotted **once at `Init` on
   the main thread** (`SystemInfo`/`Screen` are main-thread-only), cached, and attached to every crash
   + bug report — including unclean-shutdown reports recovered on the next launch. Heartbeats stay lean
-  for CCU and do **not** carry it. **No hardware-unique or personally-identifying id is collected.**
+  for CCU and do **not** carry it. **The raw hardware id is never transmitted or stored** — what leaves the
+  device is `SHA-256(ingest salt + device id)`. Corrected 2026-07-28: this line previously read "No
+  hardware-unique or personally-identifying id is collected", which was untrue in substance. A salted hash
+  is pseudonymous, not anonymous: it is stable for that install, so it *is* a persistent identifier and
+  therefore personal data under GDPR. Set `RequireConsent` (off by default) to send nothing until your game
+  calls `SetConsent(true)`.
   Fail-soft: if capture throws, reporting continues without it. New file `TombstackDevice.cs`; new
   `DevicePayload`. (Wire: crash/bug bodies gain an optional `device` object; every field is optional
   and the server stores only the non-empty values.) The dashboard shows a **Device** panel on the
