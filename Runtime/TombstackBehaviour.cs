@@ -210,7 +210,10 @@ namespace AnkleBreaker.Tombstack
                     _outbound.Enqueue(item); // preserve crashes/bugs (write-ahead persisted)
                     continue;
                 }
-                TombstackLog.Warn("outbound queue full; dropped oldest non-crash payload.");
+                // Counted + reported, not just warned: the per-eviction console warning this replaced
+                // only ever reached the PLAYER's machine (SDK log lines are filtered out of the
+                // uploaded session log), so the studio could never learn how much it was losing.
+                TombstackDrops.Record(DropReason.OutboundQueueFull);
                 return;
             }
         }
@@ -307,7 +310,18 @@ namespace AnkleBreaker.Tombstack
                 TombstackAppHang.NotifyPause(paused);
                 if (paused)
                 {
-                    FlushBatches();
+                    // Send DIRECTLY, not via the outbound queue. FlushBatches() -> flushOne() ->
+                    // enqueueOutbound(), and _outbound is drained ONLY by Update(), which does not run
+                    // again until RESUME (see SendHeartbeatNow's note below, which already said so). On
+                    // mobile the OS usually kills a backgrounded app before any OnApplicationQuit, so the
+                    // batch pending at background time — and one is always pending, since batches flush
+                    // at 50 items or 10s — died with the process. Measured on a live game: 543 app_paused
+                    // against 525 app_resumed, i.e. an app_paused only ever arrived when the player came
+                    // BACK; the pause that ENDS a session never reported, and took its batch with it.
+                    // WriteAhead rather than PersistOnFailure for the same reason the send is direct: a
+                    // suspended process never spends the retry budget that PersistOnFailure waits for.
+                    flushBatchDirect(_eventBatch, EVENTS_BATCH_PATH, UploadDurability.WriteAhead);
+                    flushBatchDirect(_metricBatch, METRICS_BATCH_PATH, UploadDurability.WriteAhead);
                     TombstackSessionLog.FlushNow(); // persist the log tail before the OS suspends/kills us
                     // v0.19: mark the session live at background time so CCU/liveness stay tight even
                     // if this app sits minimized past the next interval tick (gated + ephemeral inside).
@@ -340,16 +354,29 @@ namespace AnkleBreaker.Tombstack
         }
 
         /// <summary>Drain one batch and send its envelope DIRECTLY via <c>StartCoroutine(send(...))</c>
-        /// (mirrors <see cref="flushOne"/> but bypasses the outbound queue for the quit path, where
-        /// <see cref="Update"/> will never drain the queue again). PersistOnFailure durability is kept,
-        /// so a failed send still persists to disk and retries next launch. Fail-silent.</summary>
-        private void flushBatchDirect(TombstackBatch batch, string path)
+        /// (mirrors <see cref="flushOne"/> but bypasses the outbound queue for the quit and pause paths,
+        /// where <see cref="Update"/> either never runs again or does not run until resume). Fail-silent.
+        /// <para><paramref name="durability"/> defaults to <see cref="UploadDurability.PersistOnFailure"/>
+        /// — the quit path, where a failed send persists once the in-session retry budget is spent and
+        /// goes out next launch. The PAUSE path passes <see cref="UploadDurability.WriteAhead"/> instead,
+        /// because PersistOnFailure only reaches disk once that budget is SPENT, and a process the OS
+        /// suspends mid-pause never spends it — the batch would die in memory. WriteAhead persists BEFORE
+        /// the first attempt; the record is deleted on the 2xx, so a delivered batch is never replayed.
+        /// </para></summary>
+        private void flushBatchDirect(
+            TombstackBatch batch, string path,
+            UploadDurability durability = UploadDurability.PersistOnFailure)
         {
             if (!Tombstack.CollectingStarted || !batch.HasItems) return;
             var envelope = batch.DrainEnvelope(DateTime.UtcNow.ToString("yyyy-MM-ddTHH:mm:ss.fffZ"));
             if (envelope == null) return;
             _lastFlushAtSeconds = monotonic();
-            StartCoroutine(send(PendingUpload.Post(path, envelope, UploadDurability.PersistOnFailure, null, false, false)));
+            var item = PendingUpload.Post(path, envelope, durability, null, false, false);
+            // persist() is NOT called inside PendingUpload.Post — Enqueue and EnqueueWithScreenshot each
+            // call it explicitly. A direct send must do the same, or WriteAhead silently degrades to no
+            // durability at all: the one failure mode this parameter exists to remove.
+            if (durability == UploadDurability.WriteAhead) persist(item);
+            StartCoroutine(send(item));
         }
 
         private void loadPersistedQueue()
@@ -586,6 +613,7 @@ namespace AnkleBreaker.Tombstack
                 handleResult(item, req);
                 req.Dispose();
                 maybeEmitRtt(item, success, startTicks);
+                maybeReportDrops(item, success);
             }
             finally
             {
@@ -624,6 +652,28 @@ namespace AnkleBreaker.Tombstack
                 Tombstack.TrackMetric(RTT_METRIC_NAME, ms, "ms");
             }
             catch (System.Exception e) { TombstackLog.Warn("rtt metric failed: " + e.Message); }
+        }
+
+        /// <summary>
+        /// Sentry-style client report: after a successful ingest POST, ship however many payloads the
+        /// SDK has discarded since the last report as <c>tombstack.dropped_*</c> metrics, so the studio
+        /// sees them as their own series in the dashboard instead of losing telemetry in silence.
+        ///
+        /// Tied to a SUCCESS on purpose. Drops overwhelmingly happen while a device is offline or its
+        /// queues are backed up, which is precisely when a report cannot get out — sending on the drop
+        /// itself would queue behind the backlog, or add to it. A success is the SDK's proof that the
+        /// pipe is open again. Same recursion gate as the RTT metric: the metrics batch that carries a
+        /// drop report must not be able to trigger another one. Fail-silent.
+        /// </summary>
+        private void maybeReportDrops(PendingUpload item, bool success)
+        {
+            try
+            {
+                if (!success || item.IsLogPut || !isIngestPath(item.Path)) return;
+                if (item.Path == METRICS_BATCH_PATH) return; // gate: a drop report can't report on itself
+                TombstackDrops.ReportPending();
+            }
+            catch (System.Exception e) { TombstackLog.Warn("drop report failed: " + e.Message); }
         }
 
         /// <summary>Build the request; returns null (never throws) on internal failure.
@@ -715,6 +765,7 @@ namespace AnkleBreaker.Tombstack
                     // Rejected by validation/auth (or an expired presign) — retrying forever
                     // would just burn quota.
                     TombstackLog.Warn($"payload rejected with HTTP {code}; dropping ({(item.IsLogPut ? "log upload" : item.Path)}).");
+                    TombstackDrops.Record(DropReason.Rejected);
                     deletePersisted(item);
                     return;
                 }
@@ -928,7 +979,18 @@ namespace AnkleBreaker.Tombstack
             {
                 lock (_persistLock)
                 {
-                    if (string.IsNullOrEmpty(_queueDir) || _persistedCount >= MAX_PERSISTED_FILES) return;
+                    if (string.IsNullOrEmpty(_queueDir)) return;
+                    if (_persistedCount >= MAX_PERSISTED_FILES)
+                    {
+                        // The offline sidecar is full. This is NOT harmless: the write-ahead call above
+                        // loses its durability (a crash report enqueued now dies with the process), and
+                        // the last-resort persist in handleResult — the one that runs after five failed
+                        // in-session attempts — discards the payload outright. It used to return in
+                        // silence. Now it is counted, warned once, written into the session log that
+                        // ships with crash reports, and reported as a metric on the next good upload.
+                        TombstackDrops.Record(DropReason.OfflineQueueFull);
+                        return;
+                    }
                     Directory.CreateDirectory(_queueDir);
                     var record = new PersistedRecord { path = item.Path, body = item.Body, requestLog = item.RequestedLog };
                     var file = Path.Combine(_queueDir, Guid.NewGuid().ToString("N") + ".json");

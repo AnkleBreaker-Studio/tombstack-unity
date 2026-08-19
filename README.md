@@ -61,13 +61,13 @@ reported until `Tombstack.SetConsent(true)`.
 **Via UPM git URL** (public mirror) — Window ▸ Package Manager ▸ `+` ▸ *Add package from git URL…*:
 
 ```
-https://github.com/AnkleBreaker-Studio/tombstack-unity.git#v0.19.4
+https://github.com/AnkleBreaker-Studio/tombstack-unity.git#v0.19.5
 ```
 
 Or add to `Packages/manifest.json`:
 
 ```jsonc
-{ "dependencies": { "com.anklebreaker.tombstack": "https://github.com/AnkleBreaker-Studio/tombstack-unity.git#v0.19.4" } }
+{ "dependencies": { "com.anklebreaker.tombstack": "https://github.com/AnkleBreaker-Studio/tombstack-unity.git#v0.19.5" } }
 ```
 
 Or copy `unity/` into your project's `Packages/`. Requires Unity **6 (6000.0)+** (Mono and IL2CPP).
@@ -105,12 +105,18 @@ gentle one-time prompt points you to the Hub.
 asset under any `Resources/` folder named `TombstackConfig`. It auto-initializes on load
 (enable *Require Consent* to stay silent until `SetConsent(true)`).
 
+> **A new config asset ships placeholders** — `Endpoint` is `https://your-tenant.example.com`
+> and `Game Token` is `tmb_REPLACE_ME`. That host does **not resolve**, so the SDK **refuses
+> to initialise** while either field is still unfilled, and logs one console **error** saying
+> so. It will not fail quietly: previously auto-init fired against the placeholder, every
+> upload failed silently, and the dashboard simply never showed a first crash.
+
 **Manual:**
 ```csharp
 using System.Collections.Generic;
 using AnkleBreaker.Tombstack;
 
-Tombstack.Init("tmb_…", "https://your-tenant.example.com");   // once, at boot
+Tombstack.Init("tmb_…", "https://tombstack.com");              // once, at boot
 Tombstack.SetConsent(true);                                    // GDPR / store-policy gate
 Tombstack.SetUser("user-123", steamId: "7656119…");            // once auth resolves — upgrades
                                                                // the device-derived id in-session (0.16)

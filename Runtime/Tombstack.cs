@@ -70,12 +70,21 @@ namespace AnkleBreaker.Tombstack
         public readonly string Hostname;
         /// <summary>Number of per-user metadata keys currently set (0 when none).</summary>
         public readonly int UserMetadataKeyCount;
+        /// <summary>
+        /// Payloads the SDK has DISCARDED so far this launch, all reasons (offline queue at its file
+        /// cap, an outbound-queue eviction, a 4xx rejection, a batch-buffer overflow). Non-zero means
+        /// this client is losing telemetry right now — worth showing in a dev HUD. The same counts are
+        /// shipped to your dashboard as <c>tombstack.dropped_*</c> metrics on the next successful
+        /// upload, so you do not have to poll this to find out.
+        /// </summary>
+        public readonly int DroppedPayloads;
 
         /// <summary>Construct a diagnostics snapshot (called by <see cref="Tombstack.GetDiagnostics"/>).</summary>
         public TombstackDiagnostics(
             bool initialized, bool consentGranted, int queuedOutbound, int persistedSidecar,
             double lastFlushAgeSeconds, string endpoint, string matchId, string serverId,
-            string environment, string region, string hostname, int userMetadataKeyCount)
+            string environment, string region, string hostname, int userMetadataKeyCount,
+            int droppedPayloads)
         {
             Initialized = initialized;
             ConsentGranted = consentGranted;
@@ -89,6 +98,18 @@ namespace AnkleBreaker.Tombstack
             Region = region;
             Hostname = hostname;
             UserMetadataKeyCount = userMetadataKeyCount;
+            DroppedPayloads = droppedPayloads;
+        }
+
+        /// <summary>Pre-<c>DroppedPayloads</c> constructor, kept so code written against an earlier SDK
+        /// still compiles (the new field reads 0). New code should use the overload above.</summary>
+        public TombstackDiagnostics(
+            bool initialized, bool consentGranted, int queuedOutbound, int persistedSidecar,
+            double lastFlushAgeSeconds, string endpoint, string matchId, string serverId,
+            string environment, string region, string hostname, int userMetadataKeyCount)
+            : this(initialized, consentGranted, queuedOutbound, persistedSidecar, lastFlushAgeSeconds,
+                   endpoint, matchId, serverId, environment, region, hostname, userMetadataKeyCount, 0)
+        {
         }
     }
 
@@ -358,6 +379,11 @@ namespace AnkleBreaker.Tombstack
         /// <summary>§K1: whether the auto round-trip metric (tombstack.rtt_ms) is enabled (read by the upload host).</summary>
         internal static bool AutoRttMetricEnabled => _autoRttMetric;
 
+        /// <summary>Whether the rolling session log is being written + uploaded (config UploadLogs).
+        /// Read by <see cref="TombstackDrops"/> before it writes a drop marker into that log — a studio
+        /// that turned log upload off must not get log writes anyway.</summary>
+        internal static bool SessionLogEnabled => _uploadLogs;
+
         /// <summary>v0.12: whether the heartbeat loop may send (config SendHeartbeats /
         /// SetCaptureEnabled(Heartbeats)). Read each interval by the heartbeat coroutine, so a
         /// runtime flip pauses/resumes the loop on its next tick.</summary>
@@ -555,7 +581,26 @@ namespace AnkleBreaker.Tombstack
                 if (_initialized) return;
                 if (string.IsNullOrEmpty(gameToken) || string.IsNullOrEmpty(endpoint))
                 {
-                    TombstackLog.Warn("Init skipped: missing token or endpoint.");
+                    TombstackLog.Error("Init aborted: no token or endpoint was supplied. Set both on your TombstackConfig asset (Tombstack > Config) or pass them to Tombstack.Init(token, endpoint). NO telemetry is being sent.");
+                    return;
+                }
+                // REFUSE the shipped placeholders. Both are the DEFAULTS on a freshly created
+                // TombstackConfig asset, and the zero-code path is "create the asset, it auto-initialises
+                // on load" — so a studio that followed the documented steps exactly got an SDK happily
+                // POSTing to https://your-tenant.example.com, a host that does not resolve (curl answers
+                // "Could not resolve host"). Every send failed, the failures are fail-silent by design,
+                // and the onboarding wizard sat on "Waiting for first crash..." forever. Nothing anywhere
+                // connected the three.
+                //
+                // Compared against TombstackConfigSO's own consts, not retyped literals, so the check
+                // cannot drift from the value that initialises the field. Error, not Warn: Unity collapses
+                // warnings behind a console toggle, and this is the only signal the studio will ever get.
+                if (endpoint.Trim() == TombstackConfigSO.ENDPOINT_PLACEHOLDER
+                    || gameToken.Trim() == TombstackConfigSO.TOKEN_PLACEHOLDER)
+                {
+                    TombstackLog.Error(
+                        "Init aborted: your TombstackConfig asset still holds its placeholder values. Open the Tombstack dashboard, copy the Endpoint and mint a per-game SDK token (tmb_...), then paste both into the config asset (Tombstack > Config). "
+                        + "The placeholder endpoint " + TombstackConfigSO.ENDPOINT_PLACEHOLDER + " does not resolve, so NO crashes, bug reports, events or sessions are being sent.");
                     return;
                 }
                 _gameToken = gameToken;
@@ -1461,15 +1506,38 @@ namespace AnkleBreaker.Tombstack
             }
         }
 
-        /// <summary>Build + buffer one metric payload with an explicit timestamp (pre-init replay path).</summary>
-        private static void trackMetricAt(string name, double value, string unit, string atIso)
+        /// <summary>
+        /// Report one SDK-health counter (currently the <c>tombstack.dropped_*</c> client reports).
+        /// Returns TRUE only when the metric was actually buffered for upload — <see cref="TombstackDrops"/>
+        /// clears its pending count on that answer alone, so a report that could not go out is retried
+        /// rather than silently lost (which is the very bug the drop counters exist to expose).
+        /// Bypasses per-name sampling on purpose: a health counter the studio never asked to sample must
+        /// not be thinned out by a game-wide sampling policy. Never throws.
+        /// </summary>
+        internal static bool TrackSdkMetric(string name, double value, string unit)
         {
             try
             {
-                if (!CaptureAllowed || string.IsNullOrEmpty(name)) return;
-                if (double.IsNaN(value) || double.IsInfinity(value)) return; // never ship a bad sample
+                return trackMetricAt(name, value, unit, nowIso(), applySampling: false);
+            }
+            catch (Exception e)
+            {
+                TombstackLog.Warn($"TrackSdkMetric failed: {e.Message}");
+                return false;
+            }
+        }
+
+        /// <summary>Build + buffer one metric payload with an explicit timestamp (pre-init replay path).
+        /// Returns true when the sample reached the batch buffer, false when it was gated out (no
+        /// consent / not initialized / bad value / sampled away).</summary>
+        private static bool trackMetricAt(string name, double value, string unit, string atIso, bool applySampling = true)
+        {
+            try
+            {
+                if (!CaptureAllowed || string.IsNullOrEmpty(name)) return false;
+                if (double.IsNaN(value) || double.IsInfinity(value)) return false; // never ship a bad sample
                 // §K1: per-name sampling, applied before building/buffering (see TrackEvent).
-                if (!passesSample(name)) return;
+                if (applySampling && !passesSample(name)) return false;
                 // Hand-built JSON (like TrackEvent): numbers are unquoted and absent optionals are
                 // OMITTED. Each metric carries its OWN occurredAtIso — the batch's sentAtIso is added
                 // only at flush time and is never used as the sample's timestamp.
@@ -1488,10 +1556,12 @@ namespace AnkleBreaker.Tombstack
                 sb.Append('}');
                 TombstackBehaviour.AddMetric(sb.ToString());
                 raiseTelemetry("metric", name);
+                return true;
             }
             catch (Exception e)
             {
                 TombstackLog.Warn($"TrackMetric failed: {e.Message}");
+                return false;
             }
         }
 
@@ -1601,7 +1671,8 @@ namespace AnkleBreaker.Tombstack
                     _environment ?? string.Empty,
                     _region ?? string.Empty,
                     _hostname ?? string.Empty,
-                    userMetadataKeyCount);
+                    userMetadataKeyCount,
+                    TombstackDrops.TotalDropped);
             }
             catch (Exception e)
             {

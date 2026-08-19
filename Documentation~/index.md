@@ -10,11 +10,11 @@ your Tombstack account. Requires **Unity 6 (6000.0)** or newer.
 
 ### 1. Install
 
-- **Tarball (recommended):** download `com.anklebreaker.tombstack-0.19.4.tgz` from
-  `https://tombstack.com/downloads/com.anklebreaker.tombstack-0.19.4.tgz`, then
+- **Tarball (recommended):** download `com.anklebreaker.tombstack-0.19.5.tgz` from
+  `https://tombstack.com/downloads/com.anklebreaker.tombstack-0.19.5.tgz`, then
   Package Manager ▸ `+` ▸ *Add package from tarball…*
 - Or Package Manager ▸ `+` ▸ *Add package from git URL…* →
-  `https://github.com/AnkleBreaker-Studio/tombstack-unity.git#v0.19.4`
+  `https://github.com/AnkleBreaker-Studio/tombstack-unity.git#v0.19.5`
 
 ### 2. Sign in (mandatory)
 
@@ -173,6 +173,38 @@ once the SDK initializes.
 
 See the package `README.md` for full runtime behavior (offline-first durable queue,
 breadcrumbs, consent gating, fail-silent guarantees).
+
+## Which calls unlock which dashboard views
+
+Every panel below reads telemetry this SDK **already sends** — none of them needs an SDK upgrade.
+They are listed because the dashboard cannot show what your game never tells it, and the difference
+between an empty panel and a useful one is usually one call you have not made yet.
+
+| Dashboard view | What it needs from your game | If you do not call it |
+|---|---|---|
+| **Where players quit** → exit points | `TrackProgression(status, area, level)` | Quitters still appear, but "last thing they did" reads `(no event recorded)` — the panel says it cannot see where they went rather than guessing |
+| **Live Fleet** → servers running matches | `StartMatch()` / `SetMatchContext(serverId, matchId)` on the server | The server shows as "players, no match" — connected players but no match reported, deliberately NOT the same as idle |
+| **Live Fleet** → a server at all | `MarkDedicatedServer(serverId)` | It is still discovered from its players' `serverId`, but flagged `inferred`, and its own crashes/health are missing |
+| **Crash breakdown** → why the process died | nothing (Android, 0.17+, automatic) | n/a — exit type / OS reason / signal arrive on their own |
+| **Crash rate vs All errors** | `ReportException` for handled errors | Handled errors are simply absent; your crash rate is unaffected either way, because since 2026-08-02 it counts only process deaths |
+| **Audiences** → typical FPS below N | nothing (0.11+, automatic) | n/a — frame stats ride heartbeats |
+| **Retention / new users / churn** | `SetUser(...)` | Anonymous players cannot be followed between sessions, so they are excluded from every cohort, retention and churn figure |
+
+**A crash is not an exception.** Since 2026-08-02 the dashboard's crash rate and crash-free
+percentage count only *process deaths* — a hard crash or an unclean shutdown. `ReportException`
+reports a handled error your game recovered from; it feeds the separate **All errors** metric and
+the per-kind split, and no longer moves your crash rate. Report exceptions freely: doing so can no
+longer make your stability numbers look worse.
+
+**Progression is what turns "they left" into "they left at boss-3".** `TrackProgression` writes
+`area` and `level` attributes, and the exit analysis reads the last one a departing player fired.
+One call at each meaningful milestone is enough:
+
+```csharp
+Tombstack.TrackProgression(ProgressionStatus.Start,    area: "forest", level: "boss-3");
+Tombstack.TrackProgression(ProgressionStatus.Fail,     area: "forest", level: "boss-3");
+Tombstack.TrackProgression(ProgressionStatus.Complete, area: "forest", level: "boss-3");
+```
 
 ## Where credentials live
 

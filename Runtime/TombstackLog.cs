@@ -25,5 +25,22 @@ namespace AnkleBreaker.Tombstack
             try { Debug.Log(PREFIX + message); }
             catch { /* logging must never take the game down */ }
         }
+
+        /// <summary>
+        /// Log a MISCONFIGURATION the SDK cannot work around — it captured nothing and never will
+        /// until a human changes something. Never throws.
+        ///
+        /// Distinct from <see cref="Warn"/> deliberately. Every diagnostic the SDK emitted was a
+        /// warning, including "Init skipped: missing token or endpoint" — and Unity's console
+        /// collapses warnings behind a toggle, so the one line explaining why zero telemetry ever
+        /// arrived sat where most developers never look. A studio following the zero-code path with an
+        /// unfilled config saw no error, no data, and an onboarding wizard stuck on "Waiting for first
+        /// crash…" forever, with nothing anywhere connecting the three.
+        /// </summary>
+        internal static void Error(string message)
+        {
+            try { Debug.LogError(PREFIX + message); }
+            catch { /* logging must never take the game down */ }
+        }
     }
 }

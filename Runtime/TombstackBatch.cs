@@ -38,10 +38,13 @@ namespace AnkleBreaker.Tombstack
         public bool Add(string itemJson, double nowSeconds)
         {
             if (string.IsNullOrEmpty(itemJson)) return false;
+            bool overflowed;
+            bool shouldFlush;
             lock (_lock)
             {
                 if (_count == 0) _oldestAtSeconds = nowSeconds;
-                if (_count == _items.Length)
+                overflowed = _count == _items.Length;
+                if (overflowed)
                 {
                     // Drop-oldest: advance head, keep count at cap (overwrite below).
                     _head = (_head + 1) % _items.Length;
@@ -50,8 +53,12 @@ namespace AnkleBreaker.Tombstack
                 int tail = (_head + _count) % _items.Length;
                 _items[tail] = itemJson;
                 _count++;
-                return _count >= FlushCount;
+                shouldFlush = _count >= FlushCount;
             }
+            // Recorded OUTSIDE the lock: Record may touch the session log, and this buffer's lock must
+            // not be held across that. An overwritten event/metric used to vanish with no trace at all.
+            if (overflowed) TombstackDrops.Record(DropReason.BatchOverflow);
+            return shouldFlush;
         }
 
         /// <summary>True when the buffer holds something older than the age trigger.</summary>

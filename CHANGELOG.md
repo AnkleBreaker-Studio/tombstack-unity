@@ -2,6 +2,80 @@
 
 All notable changes to `com.anklebreaker.tombstack`.
 
+## [0.19.5] - 2026-08-19
+
+### Added — you can now see how much telemetry the SDK is throwing away
+- **Dropped-payload reporting (`tombstack.dropped_*` metrics).** The SDK discards payloads at four
+  points, and until now every one of them returned in silence. The worst was the offline queue: past
+  its 64-file cap the write-ahead persist gave up without a word, so a crash report that had already
+  exhausted its five in-session retries was simply gone — no counter, no log line the studio could
+  ever read, no way to find out. (SDK-internal `[Tombstack]` console warnings are deliberately
+  filtered OUT of the uploaded session log to prevent a capture feedback loop, so even the sites that
+  *did* warn only ever warned the player's own machine.)
+
+  Each discard is now counted by reason and reported to your dashboard:
+
+  | metric | fires when |
+  |---|---|
+  | `tombstack.dropped_offline_queue_full` | the on-disk queue is at its file cap — reports are no longer durable across a restart |
+  | `tombstack.dropped_outbound_queue_full` | the in-memory send queue evicted its oldest non-crash payload |
+  | `tombstack.dropped_rejected` | the server answered 4xx and the payload was discarded as poison |
+  | `tombstack.dropped_batch_overflow` | an event/metric batch buffer overwrote its oldest item before it could flush |
+
+  Nothing to configure and nothing to call. The counts ride the normal metrics pipeline, so they
+  appear as their own selectable series on your game's **Analytics → Metric explorer**, and you can
+  point the existing metric alert rules at them. A game that drops nothing emits nothing — the
+  metric's mere presence is the signal.
+
+  Reporting is tied to the next **successful** ingest upload rather than to the drop itself: drops
+  overwhelmingly happen while a device is offline or its queues are backed up, which is exactly when
+  a report cannot get out. A count that could not be buffered is kept for the next attempt instead of
+  vanishing, and drop metrics are exempt from `SetSampleRate` — a health counter you never asked to
+  sample must not be sampled away.
+
+- **Drop markers in the session log.** The first drop of each kind, and every count that gets
+  reported, is written into the rolling session log — the one uploaded with crashes and bug reports.
+  So a crash report from an affected player carries the reason its siblings never arrived. Respects
+  `UploadLogs`.
+
+- **`TombstackDiagnostics.DroppedPayloads`** — payloads discarded this launch, all reasons, for a dev
+  HUD or a support overlay. Purely additive: the previous `TombstackDiagnostics` constructor is kept,
+  so existing code still compiles.
+
+### Fixed — every session was losing its last batch of events on mobile
+- **`OnApplicationPause` now sends the pending batches directly, like `OnApplicationQuit` already did.**
+  Batches flush at 50 items or 10 seconds, so there is *always* one pending when the app goes to the
+  background. The two exit paths did not agree on how to send it:
+
+  | path | route | outcome |
+  | --- | --- | --- |
+  | `OnApplicationQuit` | `flushBatchDirect` -> `StartCoroutine(send(...))` | issued before the first yield, so it is in flight |
+  | `OnApplicationPause(true)` | `FlushBatches` -> `flushOne` -> `enqueueOutbound` | sat in `_outbound`, drained only by `Update` -- which does not run again until RESUME |
+
+  On mobile the OS usually kills a backgrounded app before any `OnApplicationQuit` ever arrives, so
+  that queued batch died with the process. The SDK had already written the reason down: the note on
+  `SendHeartbeatNow` says the queue "never runs again after OnApplicationQuit and ONLY RUNS AT RESUME
+  after OnApplicationPause" -- which is why the heartbeat beside it was sent directly and the batch
+  was not.
+
+  The symptom a studio could see: an `app_paused` only ever arrived when the player came *back*. On one
+  live game that read as **543 `app_paused` against 525 `app_resumed`** -- only 23 pauses with no
+  resume, where roughly one per session was expected. Sessions appeared to end mid-action instead
+  (`match_state_changed`, `item_used`), and completed-match rate read **35.7%** when the true figure
+  was up to **45.9%**. Any game on the SDK had the same bias.
+
+- **The pause flush is `WriteAhead`, not `PersistOnFailure`.** `PersistOnFailure` only reaches disk
+  once the in-session retry budget is spent, and a process the OS suspends never spends it -- so a
+  "durable" batch still evaporated. `WriteAhead` persists before the first attempt and the record is
+  deleted on the 2xx, so a delivered batch is never replayed. The backend also dedupes on `sk`.
+
+  Unchanged: the quit path keeps `PersistOnFailure`, the pre-crash `FlushBatches()` call is untouched,
+  and no public API changed -- the new durability argument is optional and defaults to today's value.
+
+### Changed
+- The `outbound queue full; dropped oldest non-crash payload.` console warning is now logged once per
+  launch instead of once per eviction, and the count is reported instead.
+
 ## [0.19.4] - 2026-07-31
 ### Fixed
 - **Heartbeats no longer stop while the game is paused.** The heartbeat coroutine waited on

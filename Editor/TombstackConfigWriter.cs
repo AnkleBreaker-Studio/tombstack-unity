@@ -24,7 +24,10 @@ namespace AnkleBreaker.Tombstack.Editor
         private const string PROP_COLLECT_FRAME_STATS = "_collectFrameStats";
         private const string PROP_ENVIRONMENT = "_environment";
         private const string TOKEN_PREFIX = "tmb_";
-        private const string TOKEN_PLACEHOLDER = "tmb_REPLACE_ME";
+        // Was a second copy of the literal "tmb_REPLACE_ME". That value is the DEFAULT initialising
+        // TombstackConfigSO._gameToken, and the runtime Init guard now refuses it too — three readers of
+        // one value, so it is defined once, beside the field it initialises.
+        private const string TOKEN_PLACEHOLDER = TombstackConfigSO.TOKEN_PLACEHOLDER;
 
         /// <summary>Find the project's config asset anywhere under Assets (null when absent).</summary>
         public static TombstackConfigSO FindConfig()

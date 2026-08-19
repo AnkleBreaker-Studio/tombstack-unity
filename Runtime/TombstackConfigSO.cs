@@ -11,11 +11,23 @@ namespace AnkleBreaker.Tombstack
     [CreateAssetMenu(fileName = "TombstackConfig", menuName = "Tombstack/Config", order = 0)]
     public sealed class TombstackConfigSO : ScriptableObject
     {
-        [Tooltip("Tombstack base URL, e.g. https://your-tenant.example.com")]
-        [SerializeField] private string _endpoint = "https://your-tenant.example.com";
+        /// <summary>
+        /// The unfilled endpoint default. <c>example.com</c> is IANA-reserved and
+        /// <c>your-tenant.example.com</c> does not resolve — verified: curl answers
+        /// "Could not resolve host". Public so the runtime guard in <c>Tombstack.Init</c> and the
+        /// editor's <c>HasSdkToken</c> compare against the SAME literal that initialises the field
+        /// below. A second copy of a placeholder is how a guard silently stops matching the default.
+        /// </summary>
+        public const string ENDPOINT_PLACEHOLDER = "https://your-tenant.example.com";
 
-        [Tooltip("Per-game SDK token (tmb_...). Treat as a secret in shipped builds.")]
-        [SerializeField] private string _gameToken = "tmb_REPLACE_ME";
+        /// <summary>The unfilled token default. See <see cref="ENDPOINT_PLACEHOLDER"/>.</summary>
+        public const string TOKEN_PLACEHOLDER = "tmb_REPLACE_ME";
+
+        [Tooltip("Tombstack base URL — copy it from your dashboard. MUST be changed: the default does not resolve, and the SDK refuses to initialise while it is unfilled.")]
+        [SerializeField] private string _endpoint = ENDPOINT_PLACEHOLDER;
+
+        [Tooltip("Per-game SDK token (tmb_...). Treat as a secret in shipped builds. MUST be changed: the SDK refuses to initialise while it is unfilled.")]
+        [SerializeField] private string _gameToken = TOKEN_PLACEHOLDER;
 
         [Tooltip("Initialize automatically on game load (before the first scene).")]
         [SerializeField] private bool _autoInitOnLoad = true;
