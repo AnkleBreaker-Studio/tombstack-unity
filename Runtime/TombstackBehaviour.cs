@@ -65,6 +65,15 @@ namespace AnkleBreaker.Tombstack
         private const int LOG_UPLOAD_TIMEOUT_SECONDS = 30;
         private const string CONTENT_TYPE_TEXT_PLAIN = "text/plain";
         private const string CONTENT_TYPE_IMAGE_PNG = "image/png";
+        /// <summary>Header naming WHICH SDK sent an ingest POST, as <c>&lt;sdk&gt;/&lt;version&gt;</c>.
+        /// Server side: src/lib/client-version.ts. Optional on the wire forever - every build already
+        /// in players' hands sends nothing, and the server must keep accepting those.</summary>
+        private const string CLIENT_HEADER = "X-Tombstack-Client";
+        /// <summary>This package's version. MUST equal <c>unity/package.json</c>'s "version" -
+        /// tests/unity-client-header.test.ts reads both and fails the suite if they drift, because a
+        /// version string that lies is worse than no version string at all.</summary>
+        private const string SDK_VERSION = "0.19.6";
+        private const string CLIENT_HEADER_VALUE = "unity/" + SDK_VERSION;
         // §K1: name of the auto round-trip metric emitted after each successful ingest POST.
         private const string RTT_METRIC_NAME = "tombstack.rtt_ms";
 
@@ -716,6 +725,14 @@ namespace AnkleBreaker.Tombstack
                     var signature = TombstackSign.BuildHeader(_gameToken, item.Body);
                     if (signature != null) req.SetRequestHeader("X-Tombstack-Signature", signature);
                 }
+                // WHICH SDK IS SPEAKING. Until this shipped, a Tombstack POST carried only Content-Type,
+                // Authorization and (on ingest) the signature - no version and no User-Agent, since
+                // UnityWebRequest sets none - so a wire bug could not be attributed to a release and no
+                // deprecation could be scoped. Sent on EVERY request to our own endpoint, ingest and
+                // pull alike: the pull/editor paths are exactly where a protocol change would land.
+                // NOT on log/screenshot PUTs - those go to a presigned S3 URL, and an unsigned extra
+                // header there is rejected by S3, not merely ignored.
+                req.SetRequestHeader(CLIENT_HEADER, CLIENT_HEADER_VALUE);
                 req.timeout = REQUEST_TIMEOUT_SECONDS;
                 return req;
             }

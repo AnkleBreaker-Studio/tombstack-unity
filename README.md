@@ -3,8 +3,11 @@
 UPM package that captures **managed C# exceptions**, **session heartbeats**, **analytics
 events**, **breadcrumbs**, and **player bug reports** in a Unity game and uploads them to a
 Tombstack ingestion endpoint with a per-game SDK token. The native crash core
-([`../native/`](../native/)) reports native crashes through the same endpoints once
-integrated. Follows the AnkleBreaker `com.anklebreaker.*` convention and C# naming standard.
+([AnkleBreaker-Studio/tombstack-native](https://github.com/AnkleBreaker-Studio/tombstack-native))
+reports native crashes through the same endpoints once integrated. Follows the AnkleBreaker
+`com.anklebreaker.*` convention and C# naming standard.
+
+Full documentation: <https://tombstack.com/docs>.
 
 ## What's automatic
 
@@ -61,13 +64,13 @@ reported until `Tombstack.SetConsent(true)`.
 **Via UPM git URL** (public mirror) — Window ▸ Package Manager ▸ `+` ▸ *Add package from git URL…*:
 
 ```
-https://github.com/AnkleBreaker-Studio/tombstack-unity.git#v0.19.5
+https://github.com/AnkleBreaker-Studio/tombstack-unity.git#v0.19.6
 ```
 
 Or add to `Packages/manifest.json`:
 
 ```jsonc
-{ "dependencies": { "com.anklebreaker.tombstack": "https://github.com/AnkleBreaker-Studio/tombstack-unity.git#v0.19.5" } }
+{ "dependencies": { "com.anklebreaker.tombstack": "https://github.com/AnkleBreaker-Studio/tombstack-unity.git#v0.19.6" } }
 ```
 
 Or copy `unity/` into your project's `Packages/`. Requires Unity **6 (6000.0)+** (Mono and IL2CPP).

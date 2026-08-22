@@ -2,6 +2,24 @@
 
 All notable changes to `com.anklebreaker.tombstack`.
 
+## [0.19.6] - 2026-08-20
+
+### Added — the server can finally tell which SDK sent a payload
+- **`X-Tombstack-Client: unity/<version>` on every ingest POST.** Until now the client sent only
+  `Content-Type`, `Authorization` and `X-Tombstack-Signature` — no version, no User-Agent — so a wire
+  bug could not be attributed to an SDK release and no deprecation could be scoped. The header is
+  **optional on the wire forever**: every build already in players' hands sends nothing, and the server
+  keeps accepting those unchanged.
+- The version in the header is pinned to `package.json` by a test that reads both files, because a
+  version string that lies is worse than no version string at all.
+
+### Fixed — the package's own Documentation button 404'd for every customer
+- `documentationUrl` and `author.url` pointed at the **private** monorepo, which returns 404 to anyone
+  logged out. Unity's Package Manager renders `documentationUrl` as a "Documentation" link, so every
+  customer who clicked it hit a 404. Both now point at `https://tombstack.com`, and a `changelogUrl`
+  was added.
+- `README.md` linked a `../native/` path that does not exist inside the published package.
+
 ## [0.19.5] - 2026-08-19
 
 ### Added — you can now see how much telemetry the SDK is throwing away
