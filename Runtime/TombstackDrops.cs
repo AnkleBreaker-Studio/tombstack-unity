@@ -22,6 +22,11 @@ namespace AnkleBreaker.Tombstack
         /// <summary>An event/metric batch buffer was full and overwrote its oldest item — the game is
         /// producing telemetry faster than it can be flushed.</summary>
         BatchOverflow = 3,
+        /// <summary>The session had already produced its per-session budget of CUSTOM rows (events +
+        /// metrics) for the current window, so the row was dropped before it was ever buffered. The
+        /// server enforces the same ceiling; this one exists so the request is never made. Crashes,
+        /// bug reports and heartbeats are never counted against it.</summary>
+        SessionBudget = 4,
     }
 
     /// <summary>
@@ -56,7 +61,7 @@ namespace AnkleBreaker.Tombstack
         /// <summary>Unit label on every drop metric (they count payloads, they are not durations).</summary>
         internal const string METRIC_UNIT = "count";
 
-        internal const int REASON_COUNT = 4;
+        internal const int REASON_COUNT = 5;
 
         private static readonly string[] _suffix =
         {
@@ -64,6 +69,7 @@ namespace AnkleBreaker.Tombstack
             "outbound_queue_full",
             "rejected",
             "batch_overflow",
+            "session_budget",
         };
 
         private static readonly string[] _why =
@@ -72,6 +78,7 @@ namespace AnkleBreaker.Tombstack
             "the outbound queue hit its cap and evicted its oldest non-crash payload",
             "the server rejected the payload with a 4xx, so it was discarded instead of retried",
             "an event/metric batch buffer overflowed before it could be flushed",
+            "this session is over its per-session budget for custom events and metrics; crashes, bug reports and heartbeats are unaffected",
         };
 
         // Cumulative for this launch (never reset) — what GetDiagnostics reports.

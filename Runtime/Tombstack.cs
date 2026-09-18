@@ -630,6 +630,11 @@ namespace AnkleBreaker.Tombstack
                 lock (_identityLock) { _provisionalUserId = provisionalId; }
                 if (string.IsNullOrEmpty(_userId)) _userId = provisionalId;
                 _sessionId = newId();
+                // A NEW session id means a new budget. Without this, an Init in the same process after a
+                // previous session (editor play-mode loops, a re-Init after consent) would inherit the
+                // old session's spent rows and refuse telemetry the server would happily have stored,
+                // because the server's counter is keyed on the session id and this one just changed.
+                TombstackSessionBudget.Reset();
                 _initialized = true;
 
                 // Main-thread-only values (persistentDataPath) are cached here, like
@@ -1420,6 +1425,15 @@ namespace AnkleBreaker.Tombstack
                 // §K1: per-name sampling, applied BEFORE building/buffering so a dropped item costs
                 // nothing beyond the cheap sampler check (no JSON allocation).
                 if (!passesSample(name)) return;
+                // Per-session custom-row budget, charged BEFORE the JSON is built for the same reason.
+                // The server enforces the identical ceiling; this only stops us paying to upload a row
+                // it would refuse. COUNTED, never silent — the count ships as a tombstack.dropped_*
+                // metric and lands on the studio's Fleet page beside the other discard sites.
+                if (!TombstackSessionBudget.TryCharge())
+                {
+                    TombstackDrops.Record(DropReason.SessionBudget);
+                    return;
+                }
                 // Hand-built JSON: JsonUtility can't serialize dictionaries, and absent optionals
                 // must be OMITTED (an empty-string `level` would fail the server's enum).
                 var sb = new StringBuilder(EVENT_JSON_CAPACITY);
@@ -1437,7 +1451,7 @@ namespace AnkleBreaker.Tombstack
                     sb, props, MAX_EVENT_ATTRIBUTES, MAX_EVENT_ATTRIBUTE_KEY, MAX_EVENT_ATTRIBUTE_VALUE, ref first);
                 sb.Append('}');
                 // Batched (§16): accumulated into the bounded event buffer and flushed on
-                // count/age/near-full/pause/quit/pre-crash, instead of one POST per event.
+                // count/age/pause/quit/pre-crash, instead of one POST per event.
                 TombstackBehaviour.AddEvent(sb.ToString());
                 raiseTelemetry("event", name);
             }
@@ -1518,7 +1532,7 @@ namespace AnkleBreaker.Tombstack
         {
             try
             {
-                return trackMetricAt(name, value, unit, nowIso(), applySampling: false);
+                return trackMetricAt(name, value, unit, nowIso(), applySampling: false, chargeBudget: false);
             }
             catch (Exception e)
             {
@@ -1530,7 +1544,8 @@ namespace AnkleBreaker.Tombstack
         /// <summary>Build + buffer one metric payload with an explicit timestamp (pre-init replay path).
         /// Returns true when the sample reached the batch buffer, false when it was gated out (no
         /// consent / not initialized / bad value / sampled away).</summary>
-        private static bool trackMetricAt(string name, double value, string unit, string atIso, bool applySampling = true)
+        private static bool trackMetricAt(
+            string name, double value, string unit, string atIso, bool applySampling = true, bool chargeBudget = true)
         {
             try
             {
@@ -1538,6 +1553,15 @@ namespace AnkleBreaker.Tombstack
                 if (double.IsNaN(value) || double.IsInfinity(value)) return false; // never ship a bad sample
                 // §K1: per-name sampling, applied before building/buffering (see TrackEvent).
                 if (applySampling && !passesSample(name)) return false;
+                // Per-session custom-row budget (see TrackEvent). `chargeBudget` is false for the SDK's
+                // OWN health counters: those are how a studio learns it is losing telemetry, so a
+                // session over budget must still be able to say so. Exempting them is what stops this
+                // feature from eating its own report.
+                if (chargeBudget && !TombstackSessionBudget.TryCharge())
+                {
+                    TombstackDrops.Record(DropReason.SessionBudget);
+                    return false;
+                }
                 // Hand-built JSON (like TrackEvent): numbers are unquoted and absent optionals are
                 // OMITTED. Each metric carries its OWN occurredAtIso — the batch's sentAtIso is added
                 // only at flush time and is never used as the sample's timestamp.

@@ -2,6 +2,78 @@
 
 All notable changes to `com.anklebreaker.tombstack`.
 
+## [0.20.1] - 2026-09-18
+
+### Fixed — byte limits on event and metric batches
+
+- Split buffered telemetry at the API's 512 KiB limit, counting UTF-8 bytes and JSON escaping.
+  Fifty valid events with 32 full-length ASCII attributes previously produced an over-800-KiB
+  request, which the API rejected with 413 and the SDK discarded. Unicode and escaped text could
+  make it larger still. Normal, pause and quit flushes now send every resulting envelope in order;
+  pause flushes persist each envelope before sending it. No endpoint or payload fields changed.
+- Added a real Unity Editor regression harness: `scripts/test-unity-batch.ps1` in the platform repo.
+
+### Added — a per-session budget for CUSTOM telemetry, applied on the device
+
+- **Events and metrics are now capped at 60 rows per session per 30 minutes** (two custom rows per
+  player-minute). Past that the SDK stops buffering them and does not upload them. **Crashes, bug
+  reports and heartbeats are never affected** — the budget covers custom `Track*` telemetry only, so
+  the crash pipeline and the CCU meter are untouched.
+- **Why 60, and not a rounder number.** It is derived, not chosen: the cheapest band on the price
+  ladder is $0.25 per peak-CCU-month, the measured variable cost of a session's uncappable rows
+  (heartbeats, crashes, bug reports) plus the per-request rate-limiting those rows force already
+  consumes $0.0941 of it, and what is left buys 2.10 custom rows per player-minute. Floored to 2 and
+  quoted over the 30-minute reference window, that is 60. Every operand lives in
+  `src/lib/platform-cost.ts`, `src/lib/customer-cost.ts`, `src/lib/sdk-batch-policy.ts` and
+  `src/lib/plans.ts`, and `tests/session-budget.test.ts` re-runs the whole chain.
+- Tombstack enforces the same ceiling server-side, because clients are not trusted. This half exists
+  so the request is never made: a row the server refuses has already cost the player radio time and a
+  serialized payload. Both halves use the same number and the same wall-clock window, so they refuse
+  the same rows.
+- **The drop is counted, not silent.** A new `tombstack.dropped_session_budget` counter joins the
+  four existing ones and appears on your game's Fleet page under "Telemetry the SDK never delivered",
+  with the reason and what to do about it. Server-side refusals appear on the same panel as
+  `tombstack.refused_session_budget`.
+- The SDK's own health counters are exempt from the budget, so a session that goes over can still
+  report that it went over.
+
+If a build is legitimately over the budget, thin or sample the hottest `Track*` call — it is almost
+always one call site in a per-frame loop.
+
+## [0.20.0] - 2026-09-03
+
+### Changed — the batch flush window is 60s, was 10s
+- **`TrackEvent` / `TrackMetric` now flush on an age of 60s instead of 10s.** Nothing else moved: the
+  count trigger stays at 50, the ring capacity stays at 256, and pause / quit / pre-crash still force
+  an immediate flush. What you send and what is stored are unchanged — only how often the SDK opens a
+  connection to send it.
+- **Why.** Ingest rate limiting is charged per REQUEST, not per row. At a 10s window the SDK carried
+  **3.826 rows per request** measured over three days of production traffic, so the platform performed
+  **1.73 rate-limiting counter writes for every telemetry row it stored** — more accounting than
+  telemetry. At 60s the same traffic makes **60.6% fewer batch requests** at a fill of **9.717 rows per
+  request**.
+- **The age knob was the only one worth turning, and that was measured rather than assumed.** Replaying
+  every real per-session arrival timestamp through the real buffer showed **89.5%** of flushes were
+  age-triggered, 10.4% were the force-drain at session end, and **0.04%** — 52 of 119,708 — were
+  count-triggered. Raising the count from 50 would have moved essentially nothing.
+- **No new drops, and not merely "none observed".** The buffer is drop-oldest, so a longer window would
+  be dangerous if it could fill. It cannot: `TombstackBatch` clamps `FlushCount` to the capacity and
+  flushes at `FlushCount`, so occupancy is bounded by 50 and can never reach 256 while a flush drains.
+  The replay confirms it — zero drops at every window tested up to 120s.
+- **Your data is not held longer at risk.** A quit, a background, and the pre-crash path each force a
+  flush, so the window bounds request rate, not exposure. The measured curve for 20s / 30s / 45s / 60s /
+  90s / 120s, and every figure quoted above, live in `src/lib/sdk-batch-policy.ts` and are pinned by
+  `tests/sdk-batch-policy.test.ts`.
+
+### Fixed — the documented "near-full" flush trigger never existed
+- Two README lines and every trigger-listing docblock across `Tombstack.cs`, `TombstackBatch.cs` and
+  `TombstackBehaviour.cs` advertised a **near-full** flush trigger. `TombstackBatch.Add` has only ever
+  had the count trigger; the plan that specified near-full was never built. The claim is removed rather
+  than implemented, because the absent trigger is precisely what keeps the drop-oldest branch
+  unreachable. `tests/sdk-batch-policy.test.ts` now enumerates `unity/Runtime/` rather than naming
+  files, so a surviving copy fails the suite — the first version of that guard checked two files and
+  the packed tarball still shipped the claim from a third.
+
 ## [0.19.6] - 2026-08-20
 
 ### Added — the server can finally tell which SDK sent a payload
