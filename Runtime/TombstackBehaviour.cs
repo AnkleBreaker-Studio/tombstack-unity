@@ -72,17 +72,43 @@ namespace AnkleBreaker.Tombstack
         /// <summary>This package's version. MUST equal <c>unity/package.json</c>'s "version" -
         /// tests/unity-client-header.test.ts reads both and fails the suite if they drift, because a
         /// version string that lies is worse than no version string at all.</summary>
-        private const string SDK_VERSION = "0.19.6";
+        private const string SDK_VERSION = "0.20.1";
         private const string CLIENT_HEADER_VALUE = "unity/" + SDK_VERSION;
         // §K1: name of the auto round-trip metric emitted after each successful ingest POST.
         private const string RTT_METRIC_NAME = "tombstack.rtt_ms";
 
+        /// <summary>Keep capacity within the server item cap: small items may still fit in one envelope.</summary>
+        private const int BATCH_CAPACITY = 256;
+        /// <summary>Flush when this many items have accumulated. UNCHANGED at 50, deliberately: a
+        /// production census (scripts/batch-fill-census.mjs, three clean days) found the count trigger
+        /// fires on 52 of 119,708 flushes — 0.04% — so moving it buys nothing measurable. It is also
+        /// what makes overflow unreachable: TombstackBatch clamps FlushCount to the capacity and Add
+        /// flushes at FlushCount, so the buffer can never reach BATCH_CAPACITY while a flush drains.
+        /// Raising this toward the capacity is the one edit that would make drop-oldest reachable.</summary>
+        private const int BATCH_FLUSH_COUNT = 50;
+        /// <summary>Flush when the oldest buffered item is this many seconds old.
+        ///
+        /// 60s, was 10s. Rate limiting is charged PER REQUEST (six counter writes per batch POST), and
+        /// at a 10s window the SDK carried 3.826 rows per request — so the platform wrote 1.73
+        /// accounting rows for every telemetry row it stored. The same census showed 89.5% of flushes
+        /// were AGE-triggered, making this the only knob that moves anything: at 60s the same traffic
+        /// makes 60.6% fewer batch requests at a fill of 9.717, with ZERO additional drops.
+        ///
+        /// The whole measured curve (20s / 30s / 45s / 60s / 90s / 120s) and every figure quoted here
+        /// live in src/lib/sdk-batch-policy.ts, and tests/sdk-batch-policy.test.ts pins THIS constant,
+        /// the README and the CHANGELOG against it.</summary>
+        private const float BATCH_FLUSH_AGE_SECONDS = 60f;
+
         private static readonly ConcurrentQueue<PendingUpload> _outbound = new ConcurrentQueue<PendingUpload>();
-        // Bounded, preallocated event/metric batch buffers (§16/§15): cap 256, flush at 50 items or
-        // 10s age (so low-volume games still report), near-full, pause/quit, and pre-crash. Drop-oldest
-        // beyond cap. Steady-state allocation-free — only a flush (rare) builds an envelope string.
-        private static readonly TombstackBatch _eventBatch = new TombstackBatch(256, 50, 10f);
-        private static readonly TombstackBatch _metricBatch = new TombstackBatch(256, 50, 10f);
+        // Bounded, preallocated event/metric batch buffers (§16/§15): flush at BATCH_FLUSH_COUNT items
+        // or BATCH_FLUSH_AGE_SECONDS of age (so low-volume games still report), plus pause/quit and
+        // pre-crash. Drop-oldest beyond cap. Steady-state allocation-free — only a flush builds an
+        // envelope string. (Those are the ONLY triggers — see the note in TombstackBatch.cs about the
+        // third one these docblocks used to list and TombstackBatch.Add has never implemented.)
+        private static readonly TombstackBatch _eventBatch =
+            new TombstackBatch(BATCH_CAPACITY, BATCH_FLUSH_COUNT, BATCH_FLUSH_AGE_SECONDS);
+        private static readonly TombstackBatch _metricBatch =
+            new TombstackBatch(BATCH_CAPACITY, BATCH_FLUSH_COUNT, BATCH_FLUSH_AGE_SECONDS);
         private static readonly object _persistLock = new object();
         private static TombstackBehaviour _instance;
         private static string _queueDir;
@@ -228,14 +254,14 @@ namespace AnkleBreaker.Tombstack
         }
 
         /// <summary>Append a pre-serialized event item to the batch; flush immediately when the
-        /// count/near-full trigger hits. Thread-safe; allocation-free below the flush threshold.</summary>
+        /// count trigger hits. Thread-safe; allocation-free below the flush threshold.</summary>
         internal static void AddEvent(string itemJson)
         {
             if (_eventBatch.Add(itemJson, monotonic())) flushOne(_eventBatch, EVENTS_BATCH_PATH);
         }
 
         /// <summary>Append a pre-serialized metric item to the batch; flush immediately when the
-        /// count/near-full trigger hits. Thread-safe; allocation-free below the flush threshold.</summary>
+        /// count trigger hits. Thread-safe; allocation-free below the flush threshold.</summary>
         internal static void AddMetric(string itemJson)
         {
             if (_metricBatch.Add(itemJson, monotonic())) flushOne(_metricBatch, METRICS_BATCH_PATH);
@@ -258,10 +284,10 @@ namespace AnkleBreaker.Tombstack
             // reports bypass this (they enqueueOutbound directly), so a startup crash still sends.
             if (!Tombstack.CollectingStarted) return;
             if (!batch.HasItems) return;
-            var envelope = batch.DrainEnvelope(DateTime.UtcNow.ToString("yyyy-MM-ddTHH:mm:ss.fffZ"));
-            if (envelope == null) return;
+            var envelopes = batch.DrainEnvelopes(DateTime.UtcNow.ToString("yyyy-MM-ddTHH:mm:ss.fffZ"));
             _lastFlushAtSeconds = monotonic(); // §K3 diagnostics: stamp the last-flush time
-            enqueueOutbound(PendingUpload.Post(path, envelope, UploadDurability.PersistOnFailure, null, false, false));
+            foreach (var envelope in envelopes)
+                enqueueOutbound(PendingUpload.Post(path, envelope, UploadDurability.PersistOnFailure, null, false, false));
         }
 
         /// <summary>Monotonic seconds for batch age timing (never runs backward on a clock/NTP jump).</summary>
@@ -377,15 +403,15 @@ namespace AnkleBreaker.Tombstack
             UploadDurability durability = UploadDurability.PersistOnFailure)
         {
             if (!Tombstack.CollectingStarted || !batch.HasItems) return;
-            var envelope = batch.DrainEnvelope(DateTime.UtcNow.ToString("yyyy-MM-ddTHH:mm:ss.fffZ"));
-            if (envelope == null) return;
+            var envelopes = batch.DrainEnvelopes(DateTime.UtcNow.ToString("yyyy-MM-ddTHH:mm:ss.fffZ"));
             _lastFlushAtSeconds = monotonic();
-            var item = PendingUpload.Post(path, envelope, durability, null, false, false);
-            // persist() is NOT called inside PendingUpload.Post — Enqueue and EnqueueWithScreenshot each
-            // call it explicitly. A direct send must do the same, or WriteAhead silently degrades to no
-            // durability at all: the one failure mode this parameter exists to remove.
-            if (durability == UploadDurability.WriteAhead) persist(item);
-            StartCoroutine(send(item));
+            foreach (var envelope in envelopes)
+            {
+                var item = PendingUpload.Post(path, envelope, durability, null, false, false);
+                // A suspended process may never spend its retry budget: persist each pause batch first.
+                if (durability == UploadDurability.WriteAhead) persist(item);
+                StartCoroutine(send(item));
+            }
         }
 
         private void loadPersistedQueue()

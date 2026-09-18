@@ -1,11 +1,16 @@
 using System;
+using System.Collections.Generic;
 using System.Text;
 
 namespace AnkleBreaker.Tombstack
 {
     /// <summary>
     /// A bounded, preallocated buffer of pre-serialized JSON item strings (events OR metrics), with
-    /// the §16/§15 batching policy: accumulate, flush on count/age/near-full, drop-oldest beyond cap.
+    /// the §16/§15 batching policy: accumulate, flush on count or age, drop-oldest beyond cap.
+    /// (Those are the ONLY two triggers. This docblock, three others and the README each listed a
+    /// third one that fires as the ring approaches capacity; <see cref="Add"/> has never implemented
+    /// it, and the plan that specified it was never built. The claim is removed rather than honoured,
+    /// because the missing trigger is also what keeps overflow unreachable — see <see cref="FlushCount"/>.)
     /// Steady-state allocation-free: <see cref="Add"/> overwrites a slot in place; only a flush (rare)
     /// builds the envelope string. Thread-safe via a single lock (capture can run off the main thread).
     ///
@@ -15,12 +20,19 @@ namespace AnkleBreaker.Tombstack
     /// </summary>
     internal sealed class TombstackBatch
     {
+        private const int MAX_BATCH_BYTES = 512 * 1024;
         private readonly string[] _items;
         private int _head;
         private int _count;
         private readonly object _lock = new object();
 
-        /// <summary>Flush when this many items have accumulated.</summary>
+        /// <summary>Flush when this many items have accumulated.
+        ///
+        /// Clamped to <c>capacity</c> by the constructor, and that clamp is load-bearing rather than
+        /// defensive: <see cref="Add"/> flushes at <c>_count &gt;= FlushCount</c>, so while a flush
+        /// actually drains the buffer can never REACH capacity and the drop-oldest branch below is
+        /// unreachable. Lengthening <see cref="FlushAgeSeconds"/> therefore cannot cause a drop — the
+        /// count trigger, not the age trigger, is what bounds occupancy.</summary>
         public readonly int FlushCount;
         /// <summary>Flush when the oldest item is this many seconds old.</summary>
         public readonly float FlushAgeSeconds;
@@ -33,8 +45,9 @@ namespace AnkleBreaker.Tombstack
             FlushAgeSeconds = flushAgeSeconds;
         }
 
-        /// <summary>Add a pre-serialized item. Returns true when a flush trigger (count/near-full)
-        /// is now met. Drops the OLDEST item when at capacity (bounded; never grows).</summary>
+        /// <summary>Add a pre-serialized item. Returns true when the COUNT flush trigger is now met.
+        /// Drops the OLDEST item when at capacity (bounded; never grows) — reachable only when the
+        /// caller's flush is a no-op, i.e. before <c>Tombstack.CollectingStarted</c>.</summary>
         public bool Add(string itemJson, double nowSeconds)
         {
             if (string.IsNullOrEmpty(itemJson)) return false;
@@ -75,10 +88,7 @@ namespace AnkleBreaker.Tombstack
             get { lock (_lock) { return _count > 0; } }
         }
 
-        /// <summary>
-        /// Drain the buffer into a <c>{ "sentAtIso":…, "items":[…] }</c> envelope string and reset.
-        /// Returns null when empty. The items keep their own occurredAtIso (already serialized in).
-        /// </summary>
+        /// <summary>Drain the next byte-bounded envelope, preserving the remaining items.</summary>
         public string DrainEnvelope(string sentAtIso)
         {
             lock (_lock)
@@ -86,15 +96,35 @@ namespace AnkleBreaker.Tombstack
                 if (_count == 0) return null;
                 var sb = new StringBuilder(64 + _count * 128);
                 sb.Append("{\"sentAtIso\":\"").Append(sentAtIso).Append("\",\"items\":[");
-                for (int i = 0; i < _count; i++)
+                int bytes = Encoding.UTF8.GetByteCount(sb.ToString()) + 2;
+                int drained = 0;
+                while (_count > 0)
                 {
-                    if (i > 0) sb.Append(',');
-                    sb.Append(_items[(_head + i) % _items.Length]);
+                    string item = _items[_head];
+                    int itemBytes = Encoding.UTF8.GetByteCount(item) + (drained > 0 ? 1 : 0);
+                    // An oversized individual item is isolated so its 413 cannot discard valid neighbours.
+                    if (drained > 0 && bytes + itemBytes > MAX_BATCH_BYTES) break;
+                    if (drained > 0) sb.Append(',');
+                    sb.Append(item);
+                    bytes += itemBytes;
+                    _items[_head] = null;
+                    _head = (_head + 1) % _items.Length;
+                    _count--;
+                    drained++;
                 }
                 sb.Append("]}");
-                _head = 0;
-                _count = 0;
                 return sb.ToString();
+            }
+        }
+
+        /// <summary>Drain a snapshot into byte-bounded envelopes; concurrent producers wait for the next flush.</summary>
+        public List<string> DrainEnvelopes(string sentAtIso)
+        {
+            lock (_lock)
+            {
+                var envelopes = new List<string>();
+                while (_count > 0) envelopes.Add(DrainEnvelope(sentAtIso));
+                return envelopes;
             }
         }
     }
