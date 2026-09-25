@@ -11,12 +11,17 @@ namespace AnkleBreaker.Tombstack
     /// secret already sent as the Bearer ingest key). Header value shape:
     /// <c>t=&lt;unixSec&gt;,v1=&lt;hex&gt;</c>.
     ///
+    /// <c>t</c> is the SERVER's estimated clock (<see cref="TombstackHttp.ServerNowUnixSeconds"/>), not
+    /// the raw device clock: the server rejects a timestamp more than 300s from its own, and a device
+    /// clock that far off used to make every signed request fail.
+    ///
     /// Fail-silent (§15): any failure returns null so the caller sends the request unsigned — the
-    /// server accepts unsigned ingest during the signing rollout. Runs at send time, off the main
-    /// game-frame path. The <see cref="HMACSHA256"/> instance and the hex <see cref="StringBuilder"/>
-    /// are reused across calls (re-keyed only if the token changes) to avoid per-request allocation
-    /// of the crypto primitive; access is single-threaded in practice (the upload coroutine) but
-    /// guarded by a lock for safety.
+    /// server accepts unsigned ingest during the signing rollout. The HMAC is streamed over the
+    /// <c>"&lt;t&gt;."</c> prefix and the already-encoded body bytes the request uploads, so the body
+    /// is encoded to UTF-8 exactly once per send (it used to be concatenated into a second full-size
+    /// string and encoded a second time). The <see cref="HMACSHA256"/> instance and the hex
+    /// <see cref="StringBuilder"/> are reused across calls (re-keyed only if the token changes);
+    /// access is single-threaded in practice (the upload coroutine) but guarded by a lock for safety.
     /// </summary>
     internal static class TombstackSign
     {
@@ -26,18 +31,19 @@ namespace AnkleBreaker.Tombstack
         private static readonly StringBuilder _hex = new StringBuilder(64);
 
         /// <summary>
-        /// Compute the signature header for <paramref name="body"/> keyed by <paramref name="ingestKey"/>.
-        /// Returns null (never throws) when signing is impossible — the caller then sends unsigned.
+        /// Compute the signature header for the UTF-8 <paramref name="bodyBytes"/> keyed by
+        /// <paramref name="ingestKey"/>. Returns null (never throws) when signing is impossible — the
+        /// caller then sends unsigned.
         /// </summary>
-        internal static string BuildHeader(string ingestKey, string body)
+        internal static string BuildHeader(string ingestKey, byte[] bodyBytes)
         {
             try
             {
-                if (string.IsNullOrEmpty(ingestKey) || body == null) return null;
-                long t = DateTimeOffset.UtcNow.ToUnixTimeSeconds();
+                if (string.IsNullOrEmpty(ingestKey) || bodyBytes == null) return null;
+                long t = TombstackHttp.ServerNowUnixSeconds();
                 string tStr = t.ToString(CultureInfo.InvariantCulture);
                 // Signed input: "<t>.<rawBody>" — binds the body to the timestamp (replay window).
-                byte[] input = Encoding.UTF8.GetBytes(tStr + "." + body);
+                byte[] prefix = Encoding.UTF8.GetBytes(tStr + ".");
                 lock (_lock)
                 {
                     if (_hmac == null || !string.Equals(_hmacKey, ingestKey, StringComparison.Ordinal))
@@ -46,7 +52,10 @@ namespace AnkleBreaker.Tombstack
                         _hmac = new HMACSHA256(Encoding.UTF8.GetBytes(ingestKey));
                         _hmacKey = ingestKey;
                     }
-                    byte[] hash = _hmac.ComputeHash(input);
+                    _hmac.Initialize();
+                    _hmac.TransformBlock(prefix, 0, prefix.Length, null, 0);
+                    _hmac.TransformFinalBlock(bodyBytes, 0, bodyBytes.Length);
+                    byte[] hash = _hmac.Hash;
                     _hex.Length = 0;
                     for (int i = 0; i < hash.Length; i++) _hex.Append(hash[i].ToString("x2"));
                     return "t=" + tStr + ",v1=" + _hex.ToString();

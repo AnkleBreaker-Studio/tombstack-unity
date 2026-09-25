@@ -164,8 +164,6 @@ namespace AnkleBreaker.Tombstack
         private const int MAX_EVENT_ATTRIBUTE_KEY = 64;
         private const int MAX_EVENT_ATTRIBUTE_VALUE = 512;
         private const int EVENT_JSON_CAPACITY = 256;
-        private const int CRASH_DEDUPE_WINDOW_SECONDS = 60;
-        private const int MAX_TRACKED_SIGNATURES = 64;
         // §K1: bound on the per-name sample-rate map so a misbehaving game can't grow it unbounded.
         private const int MAX_SAMPLE_RATES = 128;
 
@@ -309,12 +307,8 @@ namespace AnkleBreaker.Tombstack
         private static bool _sessionTrackingStarted;
         private static readonly object _sessionTrackingLock = new object();
 
-        // Per-signature dedupe: same crash signature reports at most once per window; repeats
-        // become a counter breadcrumb instead of another report. Bounded at 64 signatures.
-        private static readonly Dictionary<string, SignatureWindow> _recentSignatures =
-            new Dictionary<string, SignatureWindow>(StringComparer.Ordinal);
-        private static readonly object _dedupeLock = new object();
-
+        // Crash dedupe + the storm rate limit live in TombstackCrashThrottle (same crash key reports at
+        // most once per window; repeats become a counter breadcrumb instead of another report).
         // Dedupe timing uses a monotonic clock, not wall time: a backward system-clock or NTP
         // jump must never suppress a genuinely new crash. Stopwatch ticks never run backward.
         private static readonly long _dedupeEpochTicks = System.Diagnostics.Stopwatch.GetTimestamp();
@@ -516,6 +510,89 @@ namespace AnkleBreaker.Tombstack
 
         /// <summary>Current deployment environment (default "production") stamped on all telemetry.</summary>
         internal static string CurrentEnvironment => _environment;
+
+        /// <summary>
+        /// Enter Play Mode WITHOUT a domain reload keeps every static from the previous play session:
+        /// <c>_initialized</c> stayed true, so <see cref="Init"/> returned early and the SDK sent nothing
+        /// for the whole session, while the log/exception hooks stayed subscribed from the last one.
+        /// SubsystemRegistration is the earliest runtime phase, before <see cref="autoInit"/>.
+        /// <para>Guarded: only a domain in which Init already ran is reset, so a normal launch (fresh
+        /// domain, every player build) is untouched — including consent granted by game code in this
+        /// same phase. In the Editor-only no-reload case Unity does not order methods within one phase,
+        /// so game code that calls the SDK from SubsystemRegistration should use AfterAssembliesLoaded.</para>
+        /// </summary>
+        [RuntimeInitializeOnLoadMethod(RuntimeInitializeLoadType.SubsystemRegistration)]
+        private static void resetStaticState()
+        {
+            try
+            {
+                if (!_initialized) return;
+                Application.logMessageReceivedThreaded -= handleLog;
+                Application.quitting -= onQuitting;
+                unhookBackgroundExceptionSources();
+                unhookSceneBreadcrumbs();
+                TombstackAppHang.Stop();
+
+                _initialized = false;
+                _consent = true;
+                _consentExplicit = false;
+                _collectingStarted = false;
+                _autoCaptureExceptions = true;
+                _sendExceptionsInEditor = true;
+                _uploadLogs = true;
+                _retainedLaunchLogs = 3;
+                _detectUncleanShutdown = true;
+                _captureScreenshotOnBugReport = true;
+                _captureScreenshotOnException = false;
+                _screenshotMaxDimension = 1280;
+                _exceptionScreenshotThrottleSeconds = 10f;
+                _autoRttMetric = true;
+                _autoSceneBreadcrumbs = true;
+                _detectAppHangs = true;
+                _appHangThresholdSeconds = 5f;
+                _sendHeartbeats = true;
+                _collectFrameStats = true;
+                _autoBreadcrumbs = true;
+                Array.Clear(_captureOverridden, 0, _captureOverridden.Length);
+                _endpoint = null;
+                _gameToken = null;
+                _sessionId = null;
+                _userId = null;
+                _steamId = null;
+                lock (_identityLock) { _provisionalUserId = null; _pendingPriorUserId = null; }
+                lock (_userMetadataLock)
+                {
+                    _userMetadata.Clear();
+                    _lastSentUserMetadataJson = "{}";
+                    _userMetadataEpoch++;
+                }
+                _role = "client";
+                _serverId = "";
+                _matchId = "";
+                _region = "";
+                _hostname = "";
+                _environment = "production";
+                _environmentExplicit = false;
+                _previousMarker = null;
+                _hadPreviousLog = false;
+                lock (_sessionTrackingLock) { _sessionTrackingStarted = false; }
+                clearBreadcrumbs();
+                lock (_sampleLock) { _sampleRates.Clear(); }
+                lock (_preInitLock) { _preInitTracks.Clear(); }
+                _rateLimitAnnounced = 0;
+
+                TombstackBehaviour.ResetStaticState();
+                TombstackCrashThrottle.Reset();
+                TombstackHttp.Reset();
+                TombstackDrops.Reset();
+                TombstackSessionBudget.Reset();
+                TombstackSessionBudget.ResetServerLimit();
+            }
+            catch (Exception e)
+            {
+                TombstackLog.Warn($"static reset failed: {e.Message}");
+            }
+        }
 
         /// <summary>Auto-init from a <c>Resources/TombstackConfig</c> asset, if present and enabled.</summary>
         [RuntimeInitializeOnLoadMethod(RuntimeInitializeLoadType.BeforeSceneLoad)]
@@ -1154,7 +1231,7 @@ namespace AnkleBreaker.Tombstack
                 var message = string.IsNullOrEmpty(ex.Message) ? "Exception" : ex.Message;
                 var stack = ex.StackTrace ?? string.Empty;
                 if (_uploadLogs) TombstackSessionLog.Append("Exception", message, stack);
-                captureException(message, stack);
+                captureException(message, stack, ex.GetType().Name);
             }
             catch (Exception e)
             {
@@ -1796,12 +1873,38 @@ namespace AnkleBreaker.Tombstack
         /// signature per window — repeats become a counter breadcrumb), write-ahead durable,
         /// and ends with a synchronous log flush so a dying process leaves the crash line on
         /// disk for next-launch upload. Safe from any thread.
+        /// <para>Storm-bounded (see <see cref="TombstackCrashThrottle"/>): the dedupe key is the exception
+        /// type + normalized top frames, distinct keys share a global token bucket (10/min), and the
+        /// synchronous log flush runs at most once per few seconds — except on the
+        /// <paramref name="isFatal"/> path, which always flushes and is never rate-limited (the process
+        /// is dying; that report is the one that matters).</para>
         /// </summary>
-        private static void captureException(string condition, string stackTrace)
+        /// <param name="exceptionType">The exception's type name when the caller has the object
+        /// (manual/background paths); null for Unity-logged conditions, which carry it as a prefix.</param>
+        private static void captureException(
+            string condition, string stackTrace, string exceptionType = null, bool isFatal = false)
         {
-            var signature = computeSignature(condition, stackTrace);
-            if (isDuplicateCrash(signature, condition)) return;
+            var now = monotonicSeconds();
+            if (isDuplicateCrash(TombstackCrashThrottle.BuildKey(condition, stackTrace, exceptionType), condition, now))
+                return;
+            int rateLimitedBefore = 0;
+            if (!isFatal && !TombstackCrashThrottle.TryAcquire(now, out rateLimitedBefore))
+            {
+                TombstackDrops.Record(DropReason.CrashRateLimited);
+                announceRateLimitOnce();
+                return;
+            }
+            if (rateLimitedBefore > 0)
+            {
+                recordBreadcrumb(
+                    $"{rateLimitedBefore} crash report(s) rate-limited before this one " +
+                    $"(max {TombstackCrashThrottle.BUCKET_CAPACITY} per minute)", "Error");
+            }
 
+            // The WIRE signature is deliberately unchanged (full message + frames): the server derives
+            // its own grouping from the stack, and its deterministic crash id hashes the raw client
+            // signature — changing it would re-key reports already queued on players' disks.
+            var signature = computeSignature(condition, stackTrace);
             var payload = new CrashPayload
             {
                 occurredAtIso = nowIso(),
@@ -1858,49 +1961,47 @@ namespace AnkleBreaker.Tombstack
             raiseTelemetry("crash", payload.stackHint);
             // Final flush in the crash path: the on-disk log must include this crash even if
             // the process dies before the upload (the write-ahead record retries next launch
-            // and uploads previous-session.log).
-            if (_uploadLogs) TombstackSessionLog.FlushNow();
+            // and uploads previous-session.log). Synchronous only when fatal or not done in the last
+            // few seconds — a storm of non-fatal exceptions used to do a blocking disk write for each
+            // one, on whatever thread threw (often the main thread). Otherwise the paced async flush.
+            if (_uploadLogs)
+            {
+                if (isFatal || TombstackCrashThrottle.TryClaimSyncFlush(now)) TombstackSessionLog.FlushNow();
+                else TombstackSessionLog.RequestFlush();
+            }
         }
 
         /// <summary>
-        /// True when this signature already reported inside the dedupe window. Repeats are
+        /// True when this crash key already reported inside the dedupe window. Repeats are
         /// counted as an Error breadcrumb (visible on the next report) instead of burning
-        /// quota with identical crash rows. The map is bounded: at capacity it resets, which
-        /// at worst re-allows one early report per signature — never drops a new crash.
+        /// quota with identical crash rows. The key map is bounded by evicting expired, then
+        /// oldest, keys (see <see cref="TombstackCrashThrottle"/>).
         /// </summary>
-        private static bool isDuplicateCrash(string signature, string condition)
+        private static bool isDuplicateCrash(string key, string condition, double now)
         {
-            var now = monotonicSeconds();
-            int suppressedCount;
-            lock (_dedupeLock)
-            {
-                if (_recentSignatures.TryGetValue(signature, out var window))
-                {
-                    if (now - window.LastSentSeconds < CRASH_DEDUPE_WINDOW_SECONDS)
-                    {
-                        window.Suppressed++;
-                        suppressedCount = window.Suppressed;
-                    }
-                    else
-                    {
-                        window.LastSentSeconds = now;
-                        window.Suppressed = 0;
-                        return false;
-                    }
-                }
-                else
-                {
-                    if (_recentSignatures.Count >= MAX_TRACKED_SIGNATURES) _recentSignatures.Clear();
-                    _recentSignatures[signature] = new SignatureWindow { LastSentSeconds = now };
-                    return false;
-                }
-            }
+            if (!TombstackCrashThrottle.IsDuplicate(key, now, out int suppressedCount)) return false;
             // Crash-path-only allocation; the counter rides the breadcrumb trail instead.
             recordBreadcrumb(
-                truncate($"crash suppressed (duplicate ×{suppressedCount} within {CRASH_DEDUPE_WINDOW_SECONDS}s): {condition}",
+                truncate($"crash suppressed (duplicate ×{suppressedCount} within {TombstackCrashThrottle.DEDUPE_WINDOW_SECONDS}s): {condition}",
                     MAX_BREADCRUMB_MESSAGE),
                 "Error");
             return true;
+        }
+
+        // Log-once latch for the crash rate limiter (0 = not yet announced this launch).
+        private static int _rateLimitAnnounced;
+
+        /// <summary>First refusal of the launch: one console warning and one session-log line (the log
+        /// ships with the next admitted report, so the studio learns reports were thinned). Every later
+        /// refusal is only counted — the count rides the next admitted report's breadcrumbs.</summary>
+        private static void announceRateLimitOnce()
+        {
+            if (System.Threading.Interlocked.Exchange(ref _rateLimitAnnounced, 1) != 0) return;
+            var message = "exception storm: crash reports are rate-limited to "
+                          + TombstackCrashThrottle.BUCKET_CAPACITY
+                          + " per minute; the rest are counted, not sent";
+            TombstackLog.Warn(message);
+            if (_uploadLogs) TombstackSessionLog.Append("Warning", TombstackLog.PREFIX + message, null);
         }
 
         // True while the background exception hooks are subscribed (SetCaptureEnabled toggling).
@@ -1943,7 +2044,7 @@ namespace AnkleBreaker.Tombstack
                 var message = "Unobserved task exception: " + inner.Message;
                 var stack = inner.StackTrace ?? string.Empty;
                 if (_uploadLogs) TombstackSessionLog.Append("Exception", message, stack);
-                captureException(message, stack);
+                captureException(message, stack, inner.GetType().Name);
             }
             catch { /* crash hook must never throw */ }
         }
@@ -1957,7 +2058,9 @@ namespace AnkleBreaker.Tombstack
                 var message = ex != null && !string.IsNullOrEmpty(ex.Message) ? ex.Message : "Unhandled exception";
                 var stack = ex != null ? ex.StackTrace ?? string.Empty : string.Empty;
                 if (_uploadLogs) TombstackSessionLog.Append("Exception", message, stack);
-                captureException(message, stack); // write-ahead + FlushNow: survives the process dying here
+                // write-ahead + FlushNow: survives the process dying here. Fatal only when the runtime
+                // says so — a non-terminating report shares the storm limits like any other capture.
+                captureException(message, stack, ex != null ? ex.GetType().Name : null, e.IsTerminating);
             }
             catch { /* crash hook must never throw */ }
         }
@@ -2017,7 +2120,14 @@ namespace AnkleBreaker.Tombstack
             TombstackSessionMarker.Write(_sessionId, nowIso(), _buildVersion, _os, _arch, _isEditor, TombstackExitInfo.CurrentPid());
             var previous = _previousMarker;
             _previousMarker = null;
-            if (previous != null) reportUncleanShutdown(previous);
+            if (previous == null) return;
+            // Deferred until the offline spool has been read (off the main thread since M7): whether a
+            // restored managed crash already represents this death is only known then.
+            TombstackBehaviour.RunAfterQueueLoaded(() =>
+            {
+                try { reportUncleanShutdown(previous); }
+                catch (Exception e) { TombstackLog.Warn($"unclean-shutdown report failed: {e.Message}"); }
+            });
         }
 
         /// <summary>
@@ -2230,12 +2340,5 @@ namespace AnkleBreaker.Tombstack
         }
 
         private static string nullIfEmpty(string value) => string.IsNullOrEmpty(value) ? null : value;
-
-        /// <summary>Mutable dedupe slot: monotonic seconds when this signature last reported + repeats since.</summary>
-        private sealed class SignatureWindow
-        {
-            public double LastSentSeconds;
-            public int Suppressed;
-        }
     }
 }

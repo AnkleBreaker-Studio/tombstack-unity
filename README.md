@@ -16,7 +16,7 @@ cases with **zero further integration**:
 
 | Capability | Automatic? | How |
 |---|---|---|
-| Unhandled exceptions (main + background threads) | ✅ Automatic | `Application.logMessageReceivedThreaded`, deduped (≤1 report per signature per 60s; repeats become a counter breadcrumb) |
+| Unhandled exceptions (main + background threads) | ✅ Automatic | `Application.logMessageReceivedThreaded`, deduped (≤1 report per fault per 60s, max 10 reports/min; repeats become a counter breadcrumb) |
 | Unobserved `Task` exceptions | ✅ Automatic | `TaskScheduler.UnobservedTaskException` (observed + reported, never escalated) |
 | AppDomain unhandled exceptions | ✅ Automatic | `AppDomain.CurrentDomain.UnhandledException` (write-ahead persisted before the process dies) |
 | Errors / warnings / logs as breadcrumbs | ✅ Automatic | Every Unity log line → 50-entry ring, attached to crashes & bug reports |
@@ -64,13 +64,13 @@ reported until `Tombstack.SetConsent(true)`.
 **Via UPM git URL** (public mirror) — Window ▸ Package Manager ▸ `+` ▸ *Add package from git URL…*:
 
 ```
-https://github.com/AnkleBreaker-Studio/tombstack-unity.git#v0.20.1
+https://github.com/AnkleBreaker-Studio/tombstack-unity.git#v0.21.0
 ```
 
 Or add to `Packages/manifest.json`:
 
 ```jsonc
-{ "dependencies": { "com.anklebreaker.tombstack": "https://github.com/AnkleBreaker-Studio/tombstack-unity.git#v0.20.1" } }
+{ "dependencies": { "com.anklebreaker.tombstack": "https://github.com/AnkleBreaker-Studio/tombstack-unity.git#v0.21.0" } }
 ```
 
 Or copy `unity/` into your project's `Packages/`. Requires Unity **6 (6000.0)+** (Mono and IL2CPP).
@@ -149,7 +149,8 @@ try { Load(); } catch (Exception e) { Tombstack.ReportException(e); }
 - **Managed exceptions** → `Application.logMessageReceivedThreaded` (background threads too),
   plus `TaskScheduler.UnobservedTaskException` and `AppDomain.CurrentDomain.UnhandledException`
   → SHA-256 signature over the message + normalized top frames → `POST /api/v1/ingest/crashes`.
-  Identical signatures dedupe to ≤1 report/min (repeats ride the breadcrumb trail as a counter).
+  The same fault (exception type + normalized top frames) dedupes to ≤1 report/min (repeats ride
+  the breadcrumb trail as a counter), and distinct faults share a 10-per-minute storm limit.
 - **Session log**: every log line mirrors into a rolling ~512 KB
   `persistentDataPath/Tombstack/session.log` (in-memory buffer, flushed off the main thread at
   most once per 5s + a final flush on the crash path). Crash and bug reports request a log

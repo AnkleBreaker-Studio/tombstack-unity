@@ -58,7 +58,7 @@ namespace AnkleBreaker.Tombstack
         {
             if (!OnMainThread) return null;
             _lastCaptureAt = Now;
-            return GrabAndEncode(maxDimension);
+            return grabAndEncode(maxDimension);
         }
 
         /// <summary>
@@ -71,12 +71,12 @@ namespace AnkleBreaker.Tombstack
             // Wait for the frame to finish so we read the fully-composited image, never a partial one.
             yield return new WaitForEndOfFrame();
             _lastCaptureAt = Now;
-            onComplete?.Invoke(GrabAndEncode(maxDimension));
+            onComplete?.Invoke(grabAndEncode(maxDimension));
         }
 
         /// <summary>Grab the current backbuffer, downscale, PNG-encode. Caller guarantees the main
         /// thread + (for the coroutine) end-of-frame. Fail-silent → null. Always frees textures.</summary>
-        private static Shot? GrabAndEncode(int maxDimension)
+        private static Shot? grabAndEncode(int maxDimension)
         {
             Texture2D full = null;
             Texture2D scaled = null;
@@ -87,12 +87,12 @@ namespace AnkleBreaker.Tombstack
                 var src = full;
                 if (maxDimension > 0 && (full.width > maxDimension || full.height > maxDimension))
                 {
-                    scaled = Downscale(full, maxDimension);
+                    scaled = downscale(full, maxDimension);
                     if (scaled != null) src = scaled;
                 }
                 byte[] png = src.EncodeToPNG();
                 if (png != null && png.Length > 0)
-                    return new Shot { Bytes = png, Size = png.Length, Sha256 = Sha256Hex(png) };
+                    return new Shot { Bytes = png, Size = png.Length, Sha256 = sha256Hex(png) };
                 return null;
             }
             catch (Exception e)
@@ -108,7 +108,7 @@ namespace AnkleBreaker.Tombstack
         }
 
         /// <summary>GPU-blit downscale that preserves aspect ratio, longest side = maxDimension.</summary>
-        private static Texture2D Downscale(Texture2D source, int maxDimension)
+        private static Texture2D downscale(Texture2D source, int maxDimension)
         {
             try
             {
@@ -139,7 +139,7 @@ namespace AnkleBreaker.Tombstack
             }
         }
 
-        private static string Sha256Hex(byte[] bytes)
+        private static string sha256Hex(byte[] bytes)
         {
             using (var sha = SHA256.Create())
             {

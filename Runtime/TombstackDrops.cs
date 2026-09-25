@@ -27,6 +27,9 @@ namespace AnkleBreaker.Tombstack
         /// server enforces the same ceiling; this one exists so the request is never made. Crashes,
         /// bug reports and heartbeats are never counted against it.</summary>
         SessionBudget = 4,
+        /// <summary>An exception storm hit the crash-capture rate limit (see TombstackCrashThrottle), so a
+        /// non-fatal crash report was never built. Fatal crashes are never rate-limited.</summary>
+        CrashRateLimited = 5,
     }
 
     /// <summary>
@@ -61,7 +64,7 @@ namespace AnkleBreaker.Tombstack
         /// <summary>Unit label on every drop metric (they count payloads, they are not durations).</summary>
         internal const string METRIC_UNIT = "count";
 
-        internal const int REASON_COUNT = 5;
+        internal const int REASON_COUNT = 6;
 
         private static readonly string[] _suffix =
         {
@@ -70,6 +73,7 @@ namespace AnkleBreaker.Tombstack
             "rejected",
             "batch_overflow",
             "session_budget",
+            "crash_rate_limited",
         };
 
         private static readonly string[] _why =
@@ -79,6 +83,7 @@ namespace AnkleBreaker.Tombstack
             "the server rejected the payload with a 4xx, so it was discarded instead of retried",
             "an event/metric batch buffer overflowed before it could be flushed",
             "this session is over its per-session budget for custom events and metrics; crashes, bug reports and heartbeats are unaffected",
+            "an exception storm hit the crash-report rate limit, so further non-fatal crash reports this minute were not sent",
         };
 
         // Cumulative for this launch (never reset) — what GetDiagnostics reports.
@@ -104,6 +109,18 @@ namespace AnkleBreaker.Tombstack
                 int sum = 0;
                 for (int i = 0; i < REASON_COUNT; i++) sum += Volatile.Read(ref _total[i]);
                 return sum;
+            }
+        }
+
+        /// <summary>Zero every counter and latch — a new "launch" for the Editor's Play Mode without a
+        /// domain reload, where statics otherwise carry the previous play session's counts over.</summary>
+        internal static void Reset()
+        {
+            for (int i = 0; i < REASON_COUNT; i++)
+            {
+                Interlocked.Exchange(ref _total[i], 0);
+                Interlocked.Exchange(ref _unreported[i], 0);
+                Interlocked.Exchange(ref _announced[i], 0);
             }
         }
 

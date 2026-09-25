@@ -1,4 +1,5 @@
 using System;
+using System.Threading;
 
 namespace AnkleBreaker.Tombstack
 {
@@ -49,6 +50,21 @@ namespace AnkleBreaker.Tombstack
         /// <summary>The budget's denominator in seconds. Pinned to the server's SESSION_BUDGET_WINDOW_SECONDS.</summary>
         internal const int WINDOW_SECONDS = 1800;
 
+        /// <summary>Response header carrying the budget the SERVER applies to this studio.</summary>
+        internal const string SERVER_BUDGET_HEADER = "X-Tombstack-Session-Budget";
+
+        /// <summary>
+        /// The limit the server announced: -1 = not heard yet (use <see cref="CUSTOM_ROWS_PER_SESSION_WINDOW"/>),
+        /// 0 = NO budget for this studio, &gt;0 = that many rows per window.
+        ///
+        /// WHY THE SERVER DECIDES. Since 2026-09-25 the server lifts the budget for studios that pay for their
+        /// rows (overage-priced), because on a real game it was discarding over half of all custom telemetry —
+        /// most of it HERE, before sending — and funnels lost the people whose steps were dropped. A hardcoded
+        /// client budget cannot follow a per-studio policy, so the SDK adopts what the server says it enforces.
+        /// Kept across sessions of one launch (it is a studio property); reset only by the static reset.
+        /// </summary>
+        private static int _serverLimit = -1;
+
         /// <summary>Unix second the currently-counted window opened. -1 until the first charge.</summary>
         private static long _windowStart = -1;
 
@@ -73,6 +89,9 @@ namespace AnkleBreaker.Tombstack
         {
             try
             {
+                int announced = Volatile.Read(ref _serverLimit);
+                if (announced == 0) return true; // the server applies no budget to this studio
+                int limit = announced > 0 ? announced : CUSTOM_ROWS_PER_SESSION_WINDOW;
                 long now = DateTimeOffset.UtcNow.ToUnixTimeSeconds();
                 long window = (now / WINDOW_SECONDS) * WINDOW_SECONDS;
                 lock (_lock)
@@ -86,7 +105,7 @@ namespace AnkleBreaker.Tombstack
                     // (N+1)th is the first refused — the same boundary the server's `isOverLimit`
                     // draws. An off-by-one here would put the two halves one row apart forever.
                     _charged++;
-                    return _charged <= CUSTOM_ROWS_PER_SESSION_WINDOW;
+                    return _charged <= limit;
                 }
             }
             catch
@@ -96,6 +115,40 @@ namespace AnkleBreaker.Tombstack
                 return true;
             }
         }
+
+        /// <summary>
+        /// Adopt the budget announced by an ingest response: <c>none</c>, or <c>&lt;rows&gt;/&lt;windowSeconds&gt;</c>.
+        /// A missing or unreadable header changes nothing (an older server, a proxy, a failure page); a limit
+        /// quoted over a different window than this SDK counts is ignored rather than misapplied.
+        /// </summary>
+        internal static void ObserveServerHeader(string value)
+        {
+            try
+            {
+                if (string.IsNullOrEmpty(value)) return;
+                string v = value.Trim();
+                if (string.Equals(v, "none", StringComparison.OrdinalIgnoreCase))
+                {
+                    Volatile.Write(ref _serverLimit, 0);
+                    return;
+                }
+                int slash = v.IndexOf('/');
+                if (slash <= 0) return;
+                if (!int.TryParse(v.Substring(0, slash), out int rows) || rows <= 0) return;
+                if (!int.TryParse(v.Substring(slash + 1), out int window) || window != WINDOW_SECONDS) return;
+                Volatile.Write(ref _serverLimit, rows);
+            }
+            catch
+            {
+                // Never throws into the upload loop; the previous limit stays in force.
+            }
+        }
+
+        /// <summary>The limit currently applied (-1 = default, 0 = none). For diagnostics and tests.</summary>
+        internal static int ServerLimit => Volatile.Read(ref _serverLimit);
+
+        /// <summary>Forget the server's announcement — static reset only (Enter Play Mode without domain reload).</summary>
+        internal static void ResetServerLimit() => Volatile.Write(ref _serverLimit, -1);
 
         /// <summary>Rows charged in the current window — for diagnostics and tests. Not a wire field.</summary>
         internal static int ChargedInWindow

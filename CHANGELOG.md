@@ -2,6 +2,79 @@
 
 All notable changes to `com.anklebreaker.tombstack`.
 
+## [0.21.0] - 2026-09-25
+
+### Fixed — custom events no longer dropped on the client for studios the server does not budget
+
+For non-paying studios (free tier, or over it without a card), custom events and metrics stay capped at 60
+rows per session per 30 minutes, exactly as in 0.20.x. Crashes, bug reports and heartbeats are never
+affected by the budget. For paying studios the server now announces `none` and the SDK stops dropping.
+
+The SDK enforced a hardcoded per-session budget (60 custom rows per 30 minutes) before sending. On a real
+game that dropped most of its custom telemetry — 56,436 rows in one day — including funnel steps, so funnels
+missed the players whose steps were dropped. Since 2026-09-25 the server applies that budget to non-paying
+studios only and announces it on every events/metrics response (`X-Tombstack-Session-Budget`); the SDK now
+adopts the announcement (`none` lifts the client budget, `60/1800` keeps it; anything unreadable changes
+nothing, and the default before the first reply is unchanged).
+
+### Fixed — a wrong device clock no longer deletes crash reports
+
+- Request signatures are now stamped with the **server's** clock. The SDK learns the offset from the
+  `Date` header of every reply from your Tombstack endpoint, failures included, and signs with the
+  corrected time. The server rejects a signature more than 300 seconds from its own clock.
+- A `401` is no longer treated as poison. `invalid_signature` (or a `401` with no recognisable body)
+  is retried with backoff, re-signed with the corrected clock. Before this change a player whose
+  clock was five minutes off had every crash report deleted from the offline spool on its first
+  attempt. `invalid_api_key` still drops analytics, but a crash or bug report is never deleted over
+  a `401`: it stays on disk and is tried once per launch.
+- `429` responses now honour `Retry-After`, capped at 10 minutes, when it is longer than the backoff.
+- WebGL cannot read the `Date` header until the server exposes it through CORS, so WebGL builds
+  still sign with the browser clock.
+
+### Fixed — exception storms are bounded
+
+- Client-side dedupe now keys on the exception type plus the normalized top frames. When there is
+  no stack it uses the message with numbers, ids and quoted literals collapsed. Before, an exception
+  whose message interpolated a value got a new key on every throw and was never deduped. The
+  `signature` sent to the server is unchanged, so no issue is re-keyed.
+- The dedupe map now evicts expired keys, then the oldest. It used to be cleared at 64 entries,
+  which re-admitted every hot signature at once.
+- Distinct exceptions share a global limit of 10 reports a minute (a token bucket). Refused reports
+  are counted: the next admitted report carries the count as a breadcrumb, and the first refusal of
+  a launch writes a warning into the session log. A fatal `AppDomain` exception bypasses the limit.
+- The synchronous session-log flush on the exception path runs at most once every 3 seconds. The
+  fatal path always flushes. Other exceptions queue the regular background flush.
+- At most 64 crash and bug items are held in memory. Past that, an item already written to the
+  spool waits for the next launch; one that is not on disk is counted as
+  `tombstack.dropped_outbound_queue_full`.
+
+### Fixed — offline spool keeps room for crashes
+
+- Event and metric batches may use at most 32 of the spool's 64 files. When the spool is full, a
+  crash or bug report evicts the oldest analytics file, which is counted as
+  `tombstack.dropped_offline_queue_full`. Analytics never evicts a crash. Before, a long offline
+  stretch of analytics could fill all 64 files and leave crash reports with no durability.
+- Unreadable spool files are now deleted. Before, each one used up a slot for good.
+
+### Changed — less work on the main thread
+
+- The offline spool is read and parsed on the thread pool at startup. Only the directory listing
+  stays on the main thread, so the file cap is correct from the first frame. The unclean-shutdown
+  check waits until the spool is loaded, so it still sees a restored crash.
+- Each ingest body is encoded to UTF-8 once. The same bytes are uploaded and HMAC-signed. Signing
+  used to build and encode a second full copy of the body.
+
+### Fixed — smaller issues
+
+- `buildVersion` is clamped to 64 characters, the server limit. A longer `Application.version`
+  used to get every payload of that build rejected with `400`.
+- Entering Play Mode with domain reload disabled now resets the SDK's static state (in
+  `SubsystemRegistration`, and only when a previous play session initialized the SDK). Before, the
+  second play session sent nothing. With domain reload disabled, call the SDK from
+  `AfterAssembliesLoaded` or later: Unity does not order methods within one phase.
+- Private screenshot helpers renamed to camelCase, following the AnkleBreaker naming standard. No
+  API change.
+
 ## [0.20.1] - 2026-09-18
 
 ### Fixed — byte limits on event and metric batches

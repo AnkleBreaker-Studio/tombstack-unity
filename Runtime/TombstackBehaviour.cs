@@ -39,6 +39,16 @@ namespace AnkleBreaker.Tombstack
         private const float RETRY_BASE_DELAY_SECONDS = 2f; // 2s, 4s, 8s, 16s, 32s
         private const int MAX_CONCURRENT_UPLOADS = 4;
         private const int MAX_PERSISTED_FILES = 64;
+        // Offline-spool quota: event/metric batches may hold at most half of the files, so a long
+        // offline stretch of analytics can never leave a crash report with nowhere to be written. When
+        // the spool is full a crash/bug report evicts the OLDEST analytics file (counted as a drop);
+        // analytics never evicts anything. It used to be one 64-file pool shared first-come.
+        private const int MAX_PERSISTED_ANALYTICS_FILES = 32;
+        // Absolute cap on crash/bug (write-ahead) items held in memory. Those items are preserved by
+        // the soft-cap eviction below, so without this an exception storm grew the queue without bound.
+        // Past it an item stays on disk only and goes out on the next launch.
+        private const int MAX_QUEUED_WRITE_AHEAD = 64;
+        private const string BUG_REPORTS_PATH = "/api/v1/ingest/bug-reports";
         // Soft cap on the in-memory outbound queue (mirrors the native worker's bounded
         // queue). A game spamming TrackEvent while offline must not grow it without bound.
         private const int MAX_OUTBOUND_QUEUE = 256;
@@ -72,7 +82,7 @@ namespace AnkleBreaker.Tombstack
         /// <summary>This package's version. MUST equal <c>unity/package.json</c>'s "version" -
         /// tests/unity-client-header.test.ts reads both and fails the suite if they drift, because a
         /// version string that lies is worse than no version string at all.</summary>
-        private const string SDK_VERSION = "0.20.1";
+        private const string SDK_VERSION = "0.21.0";
         private const string CLIENT_HEADER_VALUE = "unity/" + SDK_VERSION;
         // §K1: name of the auto round-trip metric emitted after each successful ingest POST.
         private const string RTT_METRIC_NAME = "tombstack.rtt_ms";
@@ -113,6 +123,15 @@ namespace AnkleBreaker.Tombstack
         private static TombstackBehaviour _instance;
         private static string _queueDir;
         private static int _persistedCount;
+        // Spooled analytics items, oldest first — the eviction order when a crash needs the space.
+        // Guarded by _persistLock.
+        private static readonly LinkedList<PendingUpload> _persistedAnalytics = new LinkedList<PendingUpload>();
+        // Crash/bug items currently in _outbound (bounded by MAX_QUEUED_WRITE_AHEAD). Interlocked.
+        private static int _outboundWriteAhead;
+        // Set once the previous run's spool has been read (off the main thread). Work that must see the
+        // restored items (the unclean-shutdown dedupe) waits in _afterQueueLoaded, drained by Update.
+        private static volatile bool _queueLoaded;
+        private static readonly ConcurrentQueue<Action> _afterQueueLoaded = new ConcurrentQueue<Action>();
         // True when the offline queue restored a crash report from the previous run — the
         // dirty-session detector then skips its synthetic report (no double-counting).
         private static volatile bool _hasRestoredCrash;
@@ -129,8 +148,46 @@ namespace AnkleBreaker.Tombstack
         private int _inFlight;
         private float _nextLogFlushAt;
 
-        /// <summary>True when the offline queue held a crash report from a previous session.</summary>
+        /// <summary>True when the offline queue held a crash report from a previous session. Only
+        /// meaningful once the spool has been read — gate on <see cref="RunAfterQueueLoaded"/>.</summary>
         internal static bool HasRestoredCrash => _hasRestoredCrash;
+
+        /// <summary>
+        /// Run <paramref name="action"/> on the main thread once the previous run's offline spool has
+        /// been read (M7: the reads happen off the main thread now, so <see cref="HasRestoredCrash"/> is
+        /// not final at Init). Runs immediately when already loaded or when there is no host. Main thread.
+        /// </summary>
+        internal static void RunAfterQueueLoaded(Action action)
+        {
+            if (action == null) return;
+            if (_queueLoaded || _instance == null) action();
+            else _afterQueueLoaded.Enqueue(action);
+        }
+
+        /// <summary>Return every static to its load-time value. Called by
+        /// <c>Tombstack.resetStaticState</c> when the Editor enters Play Mode WITHOUT a domain reload,
+        /// where statics survive from the previous play session (the host GameObject is already gone).
+        /// Queued-but-unsent payloads of that session are discarded; spooled ones are re-read by the
+        /// next Bootstrap.</summary>
+        internal static void ResetStaticState()
+        {
+            _instance = null;
+            while (_outbound.TryDequeue(out _)) { }
+            while (_afterQueueLoaded.TryDequeue(out _)) { }
+            _eventBatch.DrainEnvelopes(string.Empty);
+            _metricBatch.DrainEnvelopes(string.Empty);
+            lock (_persistLock)
+            {
+                _queueDir = null;
+                _persistedCount = 0;
+                _persistedAnalytics.Clear();
+            }
+            Interlocked.Exchange(ref _outboundWriteAhead, 0);
+            _queueLoaded = false;
+            _hasRestoredCrash = false;
+            Interlocked.Exchange(ref _previousLogClaimed, 0);
+            _lastFlushAtSeconds = 0;
+        }
 
         /// <summary>§K3: count of payloads waiting in the in-memory outbound queue.</summary>
         internal static int OutboundCount => _outbound.Count;
@@ -224,11 +281,31 @@ namespace AnkleBreaker.Tombstack
         /// At capacity the OLDEST non-crash item is dropped; crash/bug (write-ahead) payloads are
         /// preserved — they're already persisted to disk and retry on the next launch. Thread-safe.
         /// Allocation-free in steady state: no eviction work happens below the cap.
+        /// <para>Crash/bug items have their own hard cap (<see cref="MAX_QUEUED_WRITE_AHEAD"/>): past it
+        /// an item that is on disk simply waits there for the next launch, and one that is not (its
+        /// persist failed) is counted as dropped.</para>
         /// </summary>
         private static void enqueueOutbound(PendingUpload item)
         {
+            if (item.Durability == UploadDurability.WriteAhead)
+            {
+                if (Interlocked.Increment(ref _outboundWriteAhead) > MAX_QUEUED_WRITE_AHEAD)
+                {
+                    Interlocked.Decrement(ref _outboundWriteAhead);
+                    if (string.IsNullOrEmpty(item.FilePath)) TombstackDrops.Record(DropReason.OutboundQueueFull);
+                    return;
+                }
+            }
             if (_outbound.Count >= MAX_OUTBOUND_QUEUE) dropOldestNonCrash();
             _outbound.Enqueue(item);
+        }
+
+        /// <summary>Take the next outbound item, keeping the write-ahead count in step. Main thread.</summary>
+        private static bool tryDequeueOutbound(out PendingUpload item)
+        {
+            if (!_outbound.TryDequeue(out item)) return false;
+            if (item.Durability == UploadDurability.WriteAhead) Interlocked.Decrement(ref _outboundWriteAhead);
+            return true;
         }
 
         /// <summary>Drop the oldest non-crash payload to bound the queue. Crash/bug items pulled
@@ -305,7 +382,10 @@ namespace AnkleBreaker.Tombstack
                 // 0.12: the sampler is gated (config CollectFrameStats / SetCaptureEnabled(FrameStats)).
                 if (Tombstack.FrameStatsEnabled) TombstackFrameStats.Sample(Time.unscaledDeltaTime);
                 TombstackAppHang.Pump();
-                while (_inFlight < MAX_CONCURRENT_UPLOADS && _outbound.TryDequeue(out var item))
+                // Work deferred until the previous run's spool was read (the unclean-shutdown report).
+                // Empty-queue check is one volatile read + one TryDequeue: allocation-free when idle.
+                while (_queueLoaded && _afterQueueLoaded.TryDequeue(out var deferred)) deferred();
+                while (_inFlight < MAX_CONCURRENT_UPLOADS && tryDequeueOutbound(out var item))
                 {
                     StartCoroutine(send(item));
                 }
@@ -414,32 +494,112 @@ namespace AnkleBreaker.Tombstack
             }
         }
 
+        /// <summary>
+        /// Restore the previous run's offline spool. Only the directory LISTING happens here on the main
+        /// thread — it fixes the file count before anything new can be persisted, so the cap and the
+        /// quota are right from the first frame. Reading and parsing the files (up to 64 JSON bodies)
+        /// moved to the thread pool (M7); it used to stall Init. Never throws.
+        /// </summary>
         private void loadPersistedQueue()
+        {
+            string[] files;
+            try
+            {
+                if (!Directory.Exists(_queueDir)) { _queueLoaded = true; return; }
+                files = Directory.GetFiles(_queueDir, "*.json");
+                lock (_persistLock) { _persistedCount = files.Length; }
+            }
+            catch (Exception e)
+            {
+                TombstackLog.Warn($"could not load offline queue: {e.Message}");
+                _queueLoaded = true;
+                return;
+            }
+            if (files.Length == 0) { _queueLoaded = true; return; }
+            try
+            {
+                ThreadPool.QueueUserWorkItem(_ => readPersistedFiles(files));
+            }
+            catch (Exception e)
+            {
+                TombstackLog.Warn($"could not schedule offline queue load; loading inline: {e.Message}");
+                readPersistedFiles(files);
+            }
+        }
+
+        /// <summary>Thread-pool half of <see cref="loadPersistedQueue"/>: read each spooled record
+        /// oldest-first and queue it for upload. An unreadable record is deleted (it used to occupy a
+        /// spool slot forever). Always ends by marking the spool loaded. Never throws.</summary>
+        private static void readPersistedFiles(string[] files)
         {
             try
             {
-                if (!Directory.Exists(_queueDir)) return;
-                var files = Directory.GetFiles(_queueDir, "*.json");
-                _persistedCount = files.Length;
-                foreach (var file in files)
-                {
-                    var record = JsonUtility.FromJson<PersistedRecord>(File.ReadAllText(file));
-                    if (record != null && !string.IsNullOrEmpty(record.path))
-                    {
-                        // Restored records came from an earlier run: a granted log presign must
-                        // upload that run's preserved log, not this session's fresh one.
-                        if (record.path == Tombstack.CRASHES_PATH) _hasRestoredCrash = true;
-                        enqueueOutbound(PendingUpload.Post(
-                            record.path, record.body, UploadDurability.WriteAhead, file,
-                            record.requestLog, fromPreviousSession: true));
-                    }
-                }
+                Array.Sort(files, compareSpoolAge);
+                foreach (var file in files) restorePersisted(file);
             }
             catch (Exception e)
             {
                 TombstackLog.Warn($"could not load offline queue: {e.Message}");
             }
+            finally
+            {
+                _queueLoaded = true;
+            }
         }
+
+        private static void restorePersisted(string file)
+        {
+            try
+            {
+                // An I/O failure leaves the file for the next launch; an unparseable one is forgotten.
+                var text = File.ReadAllText(file);
+                PersistedRecord record;
+                try { record = JsonUtility.FromJson<PersistedRecord>(text); }
+                catch (ArgumentException) { record = null; }
+                if (record == null || string.IsNullOrEmpty(record.path))
+                {
+                    forgetPersistedFile(file);
+                    return;
+                }
+                // Restored records came from an earlier run: a granted log presign must
+                // upload that run's preserved log, not this session's fresh one.
+                if (record.path == Tombstack.CRASHES_PATH) _hasRestoredCrash = true;
+                var item = PendingUpload.Post(
+                    record.path, record.body, UploadDurability.WriteAhead, file,
+                    record.requestLog, fromPreviousSession: true);
+                if (!isProtectedPath(record.path))
+                {
+                    lock (_persistLock) { _persistedAnalytics.AddLast(item); }
+                }
+                enqueueOutbound(item);
+            }
+            catch (Exception e)
+            {
+                TombstackLog.Warn($"could not restore an offline record: {e.Message}");
+            }
+        }
+
+        /// <summary>Oldest spool file first, by last write time (file names are GUIDs). Never throws.</summary>
+        private static int compareSpoolAge(string a, string b)
+        {
+            try { return File.GetLastWriteTimeUtc(a).CompareTo(File.GetLastWriteTimeUtc(b)); }
+            catch { return string.CompareOrdinal(a, b); }
+        }
+
+        /// <summary>Delete a spool file that is not backed by any live item (unreadable record).</summary>
+        private static void forgetPersistedFile(string file)
+        {
+            lock (_persistLock)
+            {
+                try { File.Delete(file); }
+                catch { /* best-effort */ }
+                if (_persistedCount > 0) _persistedCount--;
+            }
+        }
+
+        /// <summary>True for crash and bug-report payloads — the spool class analytics can never evict.</summary>
+        private static bool isProtectedPath(string path) =>
+            path == Tombstack.CRASHES_PATH || path == BUG_REPORTS_PATH;
 
         private IEnumerator heartbeatLoop()
         {
@@ -645,6 +805,16 @@ namespace AnkleBreaker.Tombstack
                 long startTicks = System.Diagnostics.Stopwatch.GetTimestamp();
                 yield return req.SendWebRequest();
                 bool success = req.result == UnityWebRequest.Result.Success;
+                // Learn the server clock from EVERY reply of our own endpoint, failures included — the
+                // 401 a skewed clock earns is exactly the reply that must teach the fix (H1). Not from
+                // presigned S3 uploads: a different host, and nothing is signed with our clock there.
+                if (!item.IsLogPut)
+                {
+                    TombstackHttp.ObserveDateHeader(req.GetResponseHeader("Date"));
+                    // The server says which per-session budget it applies to this studio ("none" for a
+                    // paying one) — the SDK stops dropping client-side accordingly (TombstackSessionBudget).
+                    TombstackSessionBudget.ObserveServerHeader(req.GetResponseHeader(TombstackSessionBudget.SERVER_BUDGET_HEADER));
+                }
                 handleResult(item, req);
                 req.Dispose();
                 maybeEmitRtt(item, success, startTicks);
@@ -737,18 +907,24 @@ namespace AnkleBreaker.Tombstack
                     post.timeout = LOG_UPLOAD_TIMEOUT_SECONDS;
                     return post;
                 }
+                // Encoded ONCE: the same bytes are uploaded and signed. (Signing used to build a second
+                // full-size "<t>.<body>" string and encode that too — two extra body-sized allocations
+                // per send, on the main thread.) Kept on the main thread deliberately: the quit/pause
+                // paths rely on send() issuing the request before its first yield, which a thread-pool
+                // hop would break.
+                var bodyBytes = Encoding.UTF8.GetBytes(item.Body);
                 var req = new UnityWebRequest(_endpoint + item.Path, UnityWebRequest.kHttpVerbPOST);
-                req.uploadHandler = new UploadHandlerRaw(Encoding.UTF8.GetBytes(item.Body));
+                req.uploadHandler = new UploadHandlerRaw(bodyBytes);
                 req.downloadHandler = new DownloadHandlerBuffer();
                 req.SetRequestHeader("Content-Type", "application/json");
                 req.SetRequestHeader("Authorization", "Bearer " + _gameToken);
                 // §S3: HMAC-sign ingest POSTs only (NOT editor/pull endpoints). Fail-silent — a null
                 // header means signing failed and the request goes out unsigned (server allows unsigned
-                // during rollout). The HMAC is computed over the serialized body at send time (already
-                // off the main game-frame path).
+                // during rollout). Re-signed on every attempt, with the server-corrected clock, so a
+                // retry after a clock-skew 401 carries a fresh, accepted timestamp.
                 if (isIngestPath(item.Path))
                 {
-                    var signature = TombstackSign.BuildHeader(_gameToken, item.Body);
+                    var signature = TombstackSign.BuildHeader(_gameToken, bodyBytes);
                     if (signature != null) req.SetRequestHeader("X-Tombstack-Signature", signature);
                 }
                 // WHICH SDK IS SPEAKING. Until this shipped, a Tombstack POST carried only Content-Type,
@@ -801,8 +977,27 @@ namespace AnkleBreaker.Tombstack
                 }
 
                 long code = req.responseCode;
+                // H1: a 401 is NOT automatically poison. invalid_signature (and a bare 401) is almost
+                // always a device clock more than 300s off; the Date header of this very reply has
+                // already corrected the signing clock (send()), so a retry succeeds. It used to be
+                // treated as poison, which DELETED the spooled crash report of every player whose
+                // clock was wrong. invalid_api_key is a real credential failure: analytics drop as
+                // before, but a crash/bug report is never deleted over it.
+                var unauthorized = item.IsLogPut
+                    ? UnauthorizedKind.None
+                    : TombstackHttp.ClassifyUnauthorized(code, req.downloadHandler != null ? req.downloadHandler.text : null);
+                if (unauthorized == UnauthorizedKind.Key && item.Durability == UploadDurability.WriteAhead)
+                {
+                    // Retrying this session cannot help; the record stays on disk and is tried once per
+                    // launch, so a restored or re-minted key still delivers it.
+                    TombstackLog.Warn($"the SDK token was refused (HTTP 401) for {item.Path}; the report stays on disk for the next launch.");
+                    // Only an item whose spool write failed has nowhere to wait — that one is lost.
+                    if (string.IsNullOrEmpty(item.FilePath)) TombstackDrops.Record(DropReason.Rejected);
+                    return;
+                }
                 bool poison = code >= 400 && code < 500
-                              && code != HTTP_REQUEST_TIMEOUT && code != HTTP_TOO_MANY_REQUESTS;
+                              && code != HTTP_REQUEST_TIMEOUT && code != HTTP_TOO_MANY_REQUESTS
+                              && unauthorized != UnauthorizedKind.Signature;
                 if (poison)
                 {
                     // Rejected by validation/auth (or an expired presign) — retrying forever
@@ -817,7 +1012,14 @@ namespace AnkleBreaker.Tombstack
 
                 if (item.Attempt < MAX_RETRY_ATTEMPTS)
                 {
-                    StartCoroutine(retryLater(item));
+                    // Honour the rate limiter's Retry-After (it is set on every 429): retrying sooner
+                    // only earns another 429 and spends an attempt. Parsed against the server clock.
+                    float retryAfter = code == HTTP_TOO_MANY_REQUESTS
+                        ? TombstackHttp.ParseRetryAfterSeconds(
+                            req.GetResponseHeader("Retry-After"),
+                            DateTimeOffset.UtcNow.AddSeconds(TombstackHttp.OffsetSeconds))
+                        : -1f;
+                    StartCoroutine(retryLater(item, retryAfter));
                     return;
                 }
 
@@ -1004,10 +1206,11 @@ namespace AnkleBreaker.Tombstack
             }
         }
 
-        /// <summary>Re-enqueue after an exponential backoff delay (2s → 32s).</summary>
-        private IEnumerator retryLater(PendingUpload item)
+        /// <summary>Re-enqueue after an exponential backoff delay (2s → 32s), or after the server's
+        /// <c>Retry-After</c> when that is longer (<paramref name="minDelaySeconds"/>; negative = none).</summary>
+        private IEnumerator retryLater(PendingUpload item, float minDelaySeconds)
         {
-            float delay = RETRY_BASE_DELAY_SECONDS * (1 << item.Attempt);
+            float delay = Mathf.Max(RETRY_BASE_DELAY_SECONDS * (1 << item.Attempt), minDelaySeconds);
             item.Attempt++;
             // Realtime for the same reason as the heartbeat loop: an upload backoff is wall-clock, and a
             // paused game must not park a pending crash report indefinitely.
@@ -1015,7 +1218,8 @@ namespace AnkleBreaker.Tombstack
             enqueueOutbound(item);
         }
 
-        /// <summary>Write a payload to the offline queue (bounded). Thread-safe, never throws.</summary>
+        /// <summary>Write a payload to the offline queue (bounded, with a crash/bug reserve — see
+        /// <see cref="MAX_PERSISTED_ANALYTICS_FILES"/>). Thread-safe, never throws.</summary>
         private static void persist(PendingUpload item)
         {
             try
@@ -1023,9 +1227,17 @@ namespace AnkleBreaker.Tombstack
                 lock (_persistLock)
                 {
                     if (string.IsNullOrEmpty(_queueDir)) return;
-                    if (_persistedCount >= MAX_PERSISTED_FILES)
+                    bool analytics = !isProtectedPath(item.Path);
+                    // H3: analytics may fill only its share of the spool; the rest is reserved for crashes.
+                    if (analytics && _persistedAnalytics.Count >= MAX_PERSISTED_ANALYTICS_FILES)
                     {
-                        // The offline sidecar is full. This is NOT harmless: the write-ahead call above
+                        TombstackDrops.Record(DropReason.OfflineQueueFull);
+                        return;
+                    }
+                    if (_persistedCount >= MAX_PERSISTED_FILES && (analytics || !evictOldestAnalyticsLocked()))
+                    {
+                        // The offline sidecar is full (and, for a crash/bug report, holds no analytics
+                        // file to make room with). This is NOT harmless: the write-ahead call above
                         // loses its durability (a crash report enqueued now dies with the process), and
                         // the last-resort persist in handleResult — the one that runs after five failed
                         // in-session attempts — discards the payload outright. It used to return in
@@ -1040,6 +1252,7 @@ namespace AnkleBreaker.Tombstack
                     File.WriteAllText(file, JsonUtility.ToJson(record));
                     item.FilePath = file;
                     _persistedCount++;
+                    if (analytics) _persistedAnalytics.AddLast(item);
                 }
             }
             catch (Exception e)
@@ -1048,7 +1261,33 @@ namespace AnkleBreaker.Tombstack
             }
         }
 
-        /// <summary>Remove a delivered (or poison) payload's backing file, if any.</summary>
+        /// <summary>
+        /// Make room for a crash/bug report in a full spool by deleting the OLDEST analytics file.
+        /// That batch loses its durability (it may still be in memory and deliver this session), so
+        /// it is counted as an offline-queue drop. False when no analytics file is spooled. Caller
+        /// holds <see cref="_persistLock"/>.
+        /// </summary>
+        private static bool evictOldestAnalyticsLocked()
+        {
+            while (_persistedAnalytics.Count > 0)
+            {
+                var victim = _persistedAnalytics.First.Value;
+                _persistedAnalytics.RemoveFirst();
+                var path = victim.FilePath;
+                if (string.IsNullOrEmpty(path)) continue; // already delivered
+                try { File.Delete(path); }
+                catch { /* best-effort; the count below still frees the slot */ }
+                victim.FilePath = null;
+                if (_persistedCount > 0) _persistedCount--;
+                TombstackDrops.Record(DropReason.OfflineQueueFull);
+                return true;
+            }
+            return false;
+        }
+
+        /// <summary>Remove a delivered (or poison) payload's backing file, if any. The path is
+        /// re-read under the lock: an eviction may have taken the file in the meantime, and deleting
+        /// (and un-counting) it twice would under-count the spool.</summary>
         private static void deletePersisted(PendingUpload item)
         {
             if (string.IsNullOrEmpty(item.FilePath)) return;
@@ -1056,10 +1295,13 @@ namespace AnkleBreaker.Tombstack
             {
                 lock (_persistLock)
                 {
-                    File.Delete(item.FilePath);
+                    var path = item.FilePath;
+                    if (string.IsNullOrEmpty(path)) return;
+                    item.FilePath = null;
+                    _persistedAnalytics.Remove(item);
                     if (_persistedCount > 0) _persistedCount--;
+                    File.Delete(path);
                 }
-                item.FilePath = null;
             }
             catch { /* best-effort; a leftover file is retried and de-duplicated server-side by ULID */ }
         }

@@ -10,11 +10,11 @@ your Tombstack account. Requires **Unity 6 (6000.0)** or newer.
 
 ### 1. Install
 
-- **Tarball (recommended):** download `com.anklebreaker.tombstack-0.20.1.tgz` from
-  `https://tombstack.com/downloads/com.anklebreaker.tombstack-0.20.1.tgz`, then
+- **Tarball (recommended):** download `com.anklebreaker.tombstack-0.21.0.tgz` from
+  `https://tombstack.com/downloads/com.anklebreaker.tombstack-0.21.0.tgz`, then
   Package Manager ▸ `+` ▸ *Add package from tarball…*
 - Or Package Manager ▸ `+` ▸ *Add package from git URL…* →
-  `https://github.com/AnkleBreaker-Studio/tombstack-unity.git#v0.20.1`
+  `https://github.com/AnkleBreaker-Studio/tombstack-unity.git#v0.21.0`
 
 ### 2. Sign in (mandatory)
 
@@ -64,7 +64,8 @@ Once initialized, the SDK needs no further integration for the common cases:
 
 - **Exceptions** — unhandled exceptions on any thread, unobserved `Task` exceptions, and
   AppDomain unhandled exceptions are captured automatically and deduped (≤1 report per
-  signature per minute; repeats become a counter breadcrumb).
+  fault per minute, at most 10 reports a minute in an exception storm; repeats become a counter
+  breadcrumb).
 - **Player log** — every log line mirrors into a rolling ~512 KB
   `persistentDataPath/Tombstack/session.log`; when a crash or bug report is accepted, the log
   uploads automatically to a presigned URL returned by the server.
