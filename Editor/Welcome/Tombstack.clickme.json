@@ -1,0 +1,64 @@
+{
+  "id": "Tombstack",
+  "status": "AnkleBreaker.TombstackForUnity.Installer.Editor.TombstackForUnityClickMe.StatusLine",
+  "actions": [
+    {
+      "label": "Install or update SDK",
+      "detail": "Pins the latest SDK tag, needs Git",
+      "kind": "menu",
+      "target": "Tools/AnkleBreaker/Tombstack For Unity/Install or Update SDK",
+      "unavailable": "Needs Unity 6, or an install is running",
+      "icon": "Settings"
+    },
+    {
+      "label": "Tombstack Hub",
+      "detail": "Sign in and link your game",
+      "kind": "menu",
+      "target": "Tools/AnkleBreaker/Tombstack For Unity/Tombstack Hub",
+      "unavailable": "Install the SDK first",
+      "icon": "UnityEditor.InspectorWindow"
+    },
+    {
+      "label": "Open the demo",
+      "detail": "Test exception scene, needs the SDK",
+      "kind": "menu",
+      "target": "Tools/AnkleBreaker/Tombstack For Unity/Open Demo Scene",
+      "icon": "UnityEditor.SceneView"
+    },
+    {
+      "label": "Documentation",
+      "detail": "Get started, manual, scripting API",
+      "kind": "menu",
+      "target": "Tools/AnkleBreaker/Tombstack For Unity/Documentation",
+      "icon": "_Help"
+    }
+  ],
+  "links": [
+    {
+      "label": "README",
+      "kind": "file",
+      "target": "host:README.md"
+    },
+    {
+      "label": "Agent guide",
+      "kind": "file",
+      "target": "host:SKILL.md",
+      "detail": "SKILL.md, for AI coding assistants"
+    },
+    {
+      "label": "Tombstack website",
+      "kind": "url",
+      "target": "https://tombstack.com"
+    },
+    {
+      "label": "SDK repository",
+      "kind": "url",
+      "target": "https://github.com/AnkleBreaker-Studio/tombstack-unity"
+    },
+    {
+      "label": "SDK issues",
+      "kind": "url",
+      "target": "https://github.com/AnkleBreaker-Studio/tombstack-unity/issues"
+    }
+  ]
+}

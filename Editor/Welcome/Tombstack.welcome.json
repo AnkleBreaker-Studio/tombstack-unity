@@ -1,0 +1,137 @@
+{
+  "stamp": {
+    "packageRoot": "Packages/com.anklebreaker.tombstack",
+    "dest": "Editor/Welcome",
+    "mode": "sibling",
+    "namespace": "AnkleBreaker.Tombstack.Editor.Welcome",
+    "prefix": "TombstackSdk",
+    "menu": "Tools/AnkleBreaker/Tombstack/Welcome",
+    "prefs": "AB.TombstackForUnity.CanonicalWelcome",
+    "accent": "#f5a623",
+    "cards": "showcase",
+    "_why": "The one Welcome of Tombstack lives in the SDK (monorepo tombstack, unity/, mirrored to the public tombstack-unity), so GitHub users see it too; the Asset Store package installs the SDK and keeps only CLICKME, whose inspector draws this package's hub (clickme.py host). Its own asmdef AnkleBreaker.Tombstack.Editor.Welcome references nothing. Prefix TombstackSdk: the Asset Store package's earlier Welcome used Tombstack*, and identical file names would make the name-search fallbacks ambiguous until its cleanup runs. Prefs keep the Asset Store package's CanonicalWelcome prefix: whoever saw that Welcome is not shown this one again."
+  },
+  "schema": 1,
+  "profile": "tool",
+  "id": "Tombstack",
+  "name": "Tombstack",
+  "tagline": "Crash, exception and session telemetry for Unity — by AnkleBreaker Studio",
+  "version": "",
+  "storeVersion": false,
+  "_whyVersion": "Empty: the Welcome shows the SDK's own package.json version. storeVersion false: the catalogue's Tombstack version is the Asset Store package's (1.x), unrelated to the SDK's (0.x).",
+  "ownAssembly": "AnkleBreaker.Tombstack.Editor",
+  "requires": [],
+  "pipelines": [],
+  "hero": {
+    "label": "Open the Tombstack Hub",
+    "detail": "Sign in and link this project to a game",
+    "kind": "menu",
+    "target": "Window/Tombstack/Hub"
+  },
+  "heroAlt": {
+    "label": "Read the documentation",
+    "kind": "url",
+    "target": "https://tombstack.com/docs"
+  },
+  "steps": [
+    {
+      "id": "signin",
+      "title": "Sign in to Tombstack",
+      "doneVerb": "Opened",
+      "body": "Sign in, or create an account: free while your game stays under 10 peak CCU",
+      "action": {
+        "label": "Sign in",
+        "kind": "menu",
+        "target": "Window/Tombstack/Sign In"
+      }
+    },
+    {
+      "id": "link",
+      "title": "Link this project to a game",
+      "doneVerb": "Opened",
+      "body": "Pick or create a game in the Hub: it writes the TombstackConfig your builds read",
+      "action": {
+        "label": "Open the Hub",
+        "kind": "menu",
+        "target": "Window/Tombstack/Hub"
+      }
+    },
+    {
+      "id": "proof",
+      "title": "Watch reports arrive",
+      "doneVerb": "Opened",
+      "body": "Live Tail streams the linked game's exceptions and sessions as they land",
+      "action": {
+        "label": "Open Live Tail",
+        "kind": "menu",
+        "target": "Window/Tombstack/Live Tail"
+      }
+    }
+  ],
+  "shortcuts": [
+    {
+      "label": "Tombstack Hub",
+      "detail": "Account, games, dashboard",
+      "kind": "menu",
+      "target": "Window/Tombstack/Hub"
+    },
+    {
+      "label": "Live Tail",
+      "detail": "Reports as they land",
+      "kind": "menu",
+      "target": "Window/Tombstack/Live Tail"
+    },
+    {
+      "label": "Documentation",
+      "detail": "Setup, API, troubleshooting",
+      "kind": "url",
+      "target": "https://tombstack.com/docs"
+    },
+    {
+      "label": "SDK on GitHub",
+      "detail": "Source, tags, issues",
+      "kind": "url",
+      "target": "https://github.com/AnkleBreaker-Studio/tombstack-unity"
+    }
+  ],
+  "stats": [
+    {
+      "label": "Free under",
+      "value": "10 CCU",
+      "_source": "unity/package.json description: Free tier under 10 CCU"
+    },
+    {
+      "label": "Oldest Unity supported",
+      "value": "Unity 6",
+      "_source": "unity/package.json unity 6000.0"
+    }
+  ],
+  "help": {
+    "docs": {
+      "label": "Documentation",
+      "kind": "url",
+      "target": "https://tombstack.com/docs"
+    },
+    "bugUrl": "discord",
+    "featureUrl": "discord"
+  },
+  "usage": {
+    "filter": "t:TombstackConfigSO",
+    "phrase": "Your project contains {n} Tombstack configuration assets.",
+    "minCount": 1,
+    "reviewUrl": "store"
+  },
+  "showcase": {
+    "eyebrow": "ANKLEBREAKER STUDIO",
+    "title": "Build the rest of your game",
+    "blurb": "More tools from AnkleBreaker Studio.",
+    "seeAll": "See all {n} assets"
+  },
+  "studioTab": true,
+  "studio": {
+    "title": "We are a small studio, and we ship what we use",
+    "body": "We make the tools and the art our games need, and ship them on the Asset Store."
+  },
+  "root": "../..",
+  "icon": "Media/Icon.png"
+}
