@@ -37,16 +37,6 @@ namespace AnkleBreaker.Tombstack
     /// </summary>
     internal static class TombstackSessionBudget
     {
-        /// <summary>
-        /// Custom rows one session may produce per <see cref="WINDOW_SECONDS"/>.
-        ///
-        /// PINNED to the server's <c>CUSTOM_ROWS_PER_SESSION_WINDOW</c> by tests/session-budget-sdk.test.ts,
-        /// which reads this file. Do not move it here alone — the server is the enforcement, and a client
-        /// budget larger than the server's would send rows that get refused anyway while a smaller one
-        /// would drop rows the server would have kept. The derivation lives in the server file's docblock.
-        /// </summary>
-        internal const int CUSTOM_ROWS_PER_SESSION_WINDOW = 60;
-
         /// <summary>The budget's denominator in seconds. Pinned to the server's SESSION_BUDGET_WINDOW_SECONDS.</summary>
         internal const int WINDOW_SECONDS = 1800;
 
@@ -54,8 +44,15 @@ namespace AnkleBreaker.Tombstack
         internal const string SERVER_BUDGET_HEADER = "X-Tombstack-Session-Budget";
 
         /// <summary>
-        /// The limit the server announced: -1 = not heard yet (use <see cref="CUSTOM_ROWS_PER_SESSION_WINDOW"/>),
+        /// The limit the server announced: -1 = not heard yet (nothing is refused, rows are still counted),
         /// 0 = NO budget for this studio, &gt;0 = that many rows per window.
+        ///
+        /// WHY NOTHING IS REFUSED BEFORE THE SERVER ANSWERS. Until the first events/metrics reply, this class
+        /// used to assume the free-plan ceiling. A game that fires many events at launch (funnel steps
+        /// first of all) therefore lost them on EVERY launch, paying studio or not, and on studios the owner
+        /// raised to a higher capacity (src/lib/ingest-capacity.ts) the client would refuse what the server
+        /// accepts. The server is the enforcement either way; the client only saves uploads, so the safe
+        /// direction while it does not know is to send.
         ///
         /// WHY THE SERVER DECIDES. Since 2026-09-25 the server lifts the budget for studios that pay for their
         /// rows (overage-priced), because on a real game it was discarding over half of all custom telemetry —
@@ -91,7 +88,6 @@ namespace AnkleBreaker.Tombstack
             {
                 int announced = Volatile.Read(ref _serverLimit);
                 if (announced == 0) return true; // the server applies no budget to this studio
-                int limit = announced > 0 ? announced : CUSTOM_ROWS_PER_SESSION_WINDOW;
                 long now = DateTimeOffset.UtcNow.ToUnixTimeSeconds();
                 long window = (now / WINDOW_SECONDS) * WINDOW_SECONDS;
                 lock (_lock)
@@ -105,7 +101,9 @@ namespace AnkleBreaker.Tombstack
                     // (N+1)th is the first refused — the same boundary the server's `isOverLimit`
                     // draws. An off-by-one here would put the two halves one row apart forever.
                     _charged++;
-                    return _charged <= limit;
+                    // Counted even before the server has answered, so the two halves agree on how deep
+                    // into the window this session is once it does; refused only against a KNOWN limit.
+                    return announced < 0 || _charged <= announced;
                 }
             }
             catch

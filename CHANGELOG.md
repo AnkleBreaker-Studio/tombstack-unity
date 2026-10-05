@@ -2,6 +2,20 @@
 
 All notable changes to `com.anklebreaker.tombstack`.
 
+## [0.21.2] - 2026-10-05
+
+### Changed — no client-side refusal before the server has answered
+
+Until the first events or metrics reply of a launch, the SDK no longer assumes the free-plan
+ceiling: custom events and metrics are counted but never dropped client-side until the server has
+announced the budget it applies to the studio (`X-Tombstack-Session-Budget`). A game that fires many
+events at launch, funnel steps first, kept losing them on every launch even on a paid plan; and a
+game the platform owner moved to a higher ingest capacity would have been refused here while the
+server accepted it. The server stays the enforcement, so a non-paying studio still stores at most
+its budget: custom events and metrics are capped at 60 rows per session per 30 minutes for
+non-paying studios, paid plans and studios on a raised ingest capacity are not capped, and the SDK
+applies whatever the server announces. Crashes, bug reports and heartbeats are never affected.
+
 ## [0.21.1] - 2026-10-02
 
 ### Added — the AnkleBreaker Welcome window ships with the SDK
