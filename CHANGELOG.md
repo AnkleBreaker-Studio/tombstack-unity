@@ -2,6 +2,15 @@
 
 All notable changes to `com.anklebreaker.tombstack`.
 
+## [0.21.4] - 2026-10-06
+
+### Fixed
+- Update the Studio tab Nodary card to the approved blue/cyan identity with the official logo and versioned cover.
+- Correct the Nodary signup link to `/sign-up` and point the demo button to `/demo`.
+- Preserve the existing card layout, copy, Welcome preferences and CLICKME behavior.
+
+Session budgeting is unchanged: custom events and metrics are capped at 60 rows per session per 30 minutes for non-paying studios once the server has announced the budget; paid plans and studios on a raised ingest capacity are not capped. Crashes, bug reports and heartbeats are never affected.
+
 ## [0.21.3] - 2026-10-06
 
 ### Fixed
