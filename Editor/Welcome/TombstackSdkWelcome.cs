@@ -31,6 +31,10 @@ namespace AnkleBreaker.Tombstack.Editor.Welcome
         private static readonly Vector2 MIN_SIZE = new Vector2(980f, 680f);
 
         private ScrollView _panelScroll;
+        private bool _rebuildPending;
+        private bool _reusePanelsOnFlush;
+        private bool _skin;
+        private static bool s_opening;
 
         [SerializeField] private string _contextGuid;
         [SerializeField] private string _tab = "start";
@@ -62,7 +66,10 @@ namespace AnkleBreaker.Tombstack.Editor.Welcome
         {
             TombstackSdkWelcomeFirstOpen.OpenedThisSession = true;
             bool existed = HasOpenInstances<TombstackSdkWelcome>();
-            var window = GetWindow<TombstackSdkWelcome>(false, "Welcome", true);
+            TombstackSdkWelcome window;
+            s_opening = true;
+            try { window = GetWindow<TombstackSdkWelcome>(false, "Welcome", true); }
+            finally { s_opening = false; }
             window.minSize = MIN_SIZE;
             Rect main = EditorGUIUtility.GetMainWindowPosition();
             // GetWindow can return an existing off-screen window after a layout or monitor change.
@@ -97,6 +104,10 @@ namespace AnkleBreaker.Tombstack.Editor.Welcome
         /// </summary>
         private void OnEnable()
         {
+            TombstackSdkWelcomeServices.AcquireConsumer();
+            _skin = EditorGUIUtility.isProSkin;
+            EditorApplication.projectChanged += ScheduleRebuild;
+            TombstackSdkWelcomeServices.MediaChanged += UpdateTitleIcon;
             if (!TombstackSdkWelcomeFirstOpen.OpenedThisSession)
             {
                 EditorApplication.delayCall += () =>
@@ -118,6 +129,17 @@ namespace AnkleBreaker.Tombstack.Editor.Welcome
 
         private void OnDisable()
         {
+            EditorApplication.projectChanged -= ScheduleRebuild;
+            TombstackSdkWelcomeServices.MediaChanged -= UpdateTitleIcon;
+            EditorApplication.update -= FlushRebuild;
+            _rebuildPending = false;
+            CancelPageBuild();
+            rootVisualElement.Clear();
+            ForgetPanels();
+            _pageOffsets.Clear();
+            _filterOffsets.Clear();
+            _uiGeneration++;
+            TombstackSdkWelcomeServices.ReleaseConsumer();
             _pendingAssetsFilter = null;
             TombstackSdkWelcomeServices.CatalogChanged -= OnCatalogChanged;
             EditorSceneManager.sceneOpened -= OnSceneOpened;
@@ -125,32 +147,68 @@ namespace AnkleBreaker.Tombstack.Editor.Welcome
             AssetDatabase.importPackageCompleted -= OnPackageImported;
         }
 
-        private void OnPackageImported(string packageName) => Rebuild();
+        private void UpdateTitleIcon(string path)
+        {
+            if (_context != null && path == _context.Media(_context.Config.icon))
+                titleContent.image = TombstackSdkWelcomeServices.LoadImage(path);
+        }
+
+        private void OnPackageImported(string packageName) => ScheduleRebuild();
 
         private void OnDestroy() => TombstackSdkWelcomeServices.ReleaseImages();
 
         private void OnCatalogChanged()
         {
             if (_context == null) return;
-            _catalog = TombstackSdkWelcomeServices.LoadCatalog(_context);
+            var catalog = TombstackSdkWelcomeServices.LoadCatalog(_context);
+            if (ReferenceEquals(_catalog, catalog))
+            {
+                InvalidateStudio();
+                return;
+            }
+            _catalog = catalog;
             if (TombstackSdkWelcomeServices.CatalogOnline && _pendingAssetsFilter != null)
             {
                 _filter = _pendingAssetsFilter;
                 _pendingAssetsFilter = null;
                 _tab = "assets";
             }
-            // A fresh catalogue can name Cards this package does not embed: fetch them now. Each
-            // one that lands raises this event again; the queue skips what is already cached.
-            TombstackSdkWelcomeServices.QueueCards(_catalog);
-            Rebuild();
+            ScheduleRebuild();
         }
 
-        private void OnSceneOpened(Scene scene, OpenSceneMode mode) => Rebuild();
-        private void OnPackagesChanged(UnityEditor.PackageManager.PackageRegistrationEventArgs args) => Rebuild();
-        private void OnFocus() => Rebuild();
+        private void OnSceneOpened(Scene scene, OpenSceneMode mode) => ScheduleRebuild();
+        private void OnPackagesChanged(UnityEditor.PackageManager.PackageRegistrationEventArgs args) => ScheduleRebuild();
+        private void OnFocus()
+        {
+            if (_skin == EditorGUIUtility.isProSkin) return;
+            _skin = EditorGUIUtility.isProSkin;
+            ScheduleRebuild();
+        }
+
+        private void ScheduleRebuild()
+        {
+            _reusePanelsOnFlush = false;
+            if (_rebuildPending) return;
+            _rebuildPending = true;
+            EditorApplication.update += FlushRebuild;
+        }
+
+        private void FlushRebuild()
+        {
+            EditorApplication.update -= FlushRebuild;
+            _rebuildPending = false;
+            if (this == null) return;
+            if (_context != null)
+            {
+                _context = TombstackSdkWelcomeServices.LoadContexts().FirstOrDefault(c => c.Guid == _contextGuid);
+                if (_context != null) _catalog = TombstackSdkWelcomeServices.LoadCatalog(_context);
+            }
+            Render(_reusePanelsOnFlush);
+        }
 
         private void CreateGUI()
         {
+            if (s_opening) return;
             Bind();
             Rebuild();
         }
@@ -176,13 +234,36 @@ namespace AnkleBreaker.Tombstack.Editor.Welcome
 
         // -- Shell ----------------------------------------------------------
 
-        private void Rebuild()
+        private void Rebuild() => Render(false);
+
+        private void Render(bool reusePanels)
         {
+            using var perf = new TombstackSdkWelcomePerf.Scope("Rebuild");
+            EditorApplication.update -= FlushRebuild;
+            _rebuildPending = false;
             VisualElement root = rootVisualElement;
             if (root == null) return;
             if (_context == null) Bind();
 
             Vector2 scroll = _scroll != null ? _scroll.scrollOffset : Vector2.zero;
+            Vector2 panelScroll = _panelScroll != null ? _panelScroll.scrollOffset : Vector2.zero;
+            Action restoreFocus = PreserveFocus(root);
+            int generation = ++_uiGeneration;
+            CancelPageBuild();
+            if (!reusePanels) ForgetPanels();
+            if ((_tab == "assets" || _tab == "studio") && TombstackSdkWelcomeServices.CatalogOnline && !_pages.ContainsKey(_tab) &&
+                root.childCount == 1 && root[0].Q<VisualElement>(className: "abw-body") != null)
+            {
+                BeginPageBuild(reusePanels, restoreFocus);
+                return;
+            }
+            if (reusePanels && _context != null && root.childCount == 1 &&
+                (_tab != "assets" || TombstackSdkWelcomeServices.CatalogOnline) && (_tab != "studio" || HasStudioTab))
+            {
+                RenderNavigation(root);
+                if (restoreFocus != null) root.schedule.Execute(() => { if (generation == _uiGeneration) restoreFocus(); });
+                return;
+            }
             root.Clear();
 
             // On the shell, never on the root: rootVisualElement.styleSheets also carries the
@@ -212,30 +293,15 @@ namespace AnkleBreaker.Tombstack.Editor.Welcome
 
             shell.Add(BuildHeader());
 
-            var body = new VisualElement();
-            body.AddToClassList("abw-body");
-            shell.Add(body);
-
-            if (_tab == "assets" || _tab == "studio")
-            {
-                _scroll = Scroll("abw-full", "abw-scroll--full");
-                if (_tab == "studio") BuildStudioTab(_scroll.contentContainer);
-                else BuildAssetsTab(_scroll.contentContainer);
-                body.Add(_scroll);
-            }
-            else
-            {
-                _scroll = Scroll("abw-left", "abw-scroll--left");
-                if (_tab == "studio") BuildStudioTab(_scroll.contentContainer);
-                else if (_context.Config.profile == "art") BuildArtStart(_scroll.contentContainer);
-                else BuildToolStart(_scroll.contentContainer);
-                body.Add(_scroll);
-                if (TombstackSdkWelcomeServices.CatalogOnline) body.Add(BuildPanel());
-            }
+            shell.Add(PageBody());
 
             shell.Add(BuildFooter());
-            ScrollView restored = _scroll;
-            restored.schedule.Execute(() => restored.scrollOffset = scroll);
+            if (restoreFocus != null) root.schedule.Execute(() => { if (generation == _uiGeneration) restoreFocus(); });
+            if (!reusePanels)
+            {
+                RestoreOffset(_scroll, scroll);
+                if (_panelScroll != null) RestoreOffset(_panelScroll, panelScroll);
+            }
         }
 
         /// <summary>
@@ -258,7 +324,7 @@ namespace AnkleBreaker.Tombstack.Editor.Welcome
             string beside = Path.GetDirectoryName(script)?.Replace('\\', '/') + "/" + STYLE_NAME + ".uss";
             var sheet = AssetDatabase.LoadAssetAtPath<StyleSheet>(beside);
             if (sheet != null) return sheet;
-            foreach (string guid in AssetDatabase.FindAssets(STYLE_NAME + " t:StyleSheet"))
+            foreach (string guid in TombstackSdkWelcomeProjectCache.FindAssets(STYLE_NAME + " t:StyleSheet"))
             {
                 sheet = AssetDatabase.LoadAssetAtPath<StyleSheet>(AssetDatabase.GUIDToAssetPath(guid));
                 if (sheet != null) return sheet;
@@ -272,17 +338,12 @@ namespace AnkleBreaker.Tombstack.Editor.Welcome
 
         private VisualElement BuildHeader()
         {
+            using var perf = new TombstackSdkWelcomePerf.Scope("UI.Header");
             TombstackSdkWelcomeData config = _context.Config;
             var header = new VisualElement();
             header.AddToClassList("abw-header");
 
-            Texture2D icon = TombstackSdkWelcomeServices.LoadImage(_context.Media(config.icon));
-            if (icon != null)
-            {
-                var image = new Image { image = icon, scaleMode = ScaleMode.ScaleToFit };
-                image.AddToClassList("abw-header__icon");
-                header.Add(image);
-            }
+            header.Add(LiveImage(() => TombstackSdkWelcomeServices.LoadImage(_context.Media(config.icon)), "abw-header__icon", path: _context.Media(config.icon)));
 
             var text = new VisualElement();
             text.AddToClassList("abw-header__text");
@@ -356,7 +417,6 @@ namespace AnkleBreaker.Tombstack.Editor.Welcome
 
         private void SelectTab(string id, bool keepFocus)
         {
-            if (id == "assets") _filter = "all";
             OpenTab(id);
             if (!keepFocus) return;
             VisualElement root = rootVisualElement;
@@ -371,12 +431,12 @@ namespace AnkleBreaker.Tombstack.Editor.Welcome
             _pendingAssetsFilter = null;
             if (id != "assets" && id != "studio") id = "start";
             _tab = id;
-            _scroll = null;
-            Rebuild();
+            Render(true);
         }
 
         private VisualElement BuildFooter()
         {
+            using var perf = new TombstackSdkWelcomePerf.Scope("UI.Footer");
             var footer = new VisualElement();
             footer.AddToClassList("abw-footer");
 
@@ -384,16 +444,15 @@ namespace AnkleBreaker.Tombstack.Editor.Welcome
             discord.Add(new Label("Join us on Discord"));
             footer.Add(discord);
 
-            if (_tab == "assets")
-            {
-                Label link = Text("Open our publisher page in the browser \u203a", "abw-link");
-                link.AddManipulator(new Clickable(() => Application.OpenURL(_catalog.publisherUrl)));
-                footer.Add(link);
-            }
-            else
-            {
-                footer.Add(Text("Support, early builds, and where feature requests actually land.", "abw-footer__note"));
-            }
+            Label link = Text("Open our publisher page in the browser \u203a", "abw-link");
+            link.name = "footer-publisher";
+            link.style.display = _tab == "assets" ? DisplayStyle.Flex : DisplayStyle.None;
+            link.AddManipulator(new Clickable(() => Application.OpenURL(_catalog.publisherUrl)));
+            footer.Add(link);
+            Label note = Text("Support, early builds, and where feature requests actually land.", "abw-footer__note");
+            note.name = "footer-note";
+            note.style.display = _tab == "assets" ? DisplayStyle.None : DisplayStyle.Flex;
+            footer.Add(note);
 
             footer.Add(Fill());
 
@@ -407,6 +466,7 @@ namespace AnkleBreaker.Tombstack.Editor.Welcome
                 Rebuild();
             }, "abw-btn", rated ? "abw-btn--quiet" : "abw-review-cta");
             review.Add(new Label(rated ? "Leave a review" : "\u2605  Leave a review"));
+            review.name = "footer-review";
             review.SetEnabled(!string.IsNullOrEmpty(reviewUrl));
             footer.Add(review);
 
@@ -414,6 +474,22 @@ namespace AnkleBreaker.Tombstack.Editor.Welcome
             close.Add(new Label("Close"));
             footer.Add(close);
             return footer;
+        }
+
+        private void UpdateNavigation()
+        {
+            var shell = rootVisualElement[0];
+            var tabs = shell[0].Q<VisualElement>(className: "abw-tabs");
+            tabs.EnableInClassList("abw-tabs--panel", _tab == "start" && TombstackSdkWelcomeServices.CatalogOnline);
+            foreach (var tab in tabs.Children()) tab.EnableInClassList("abw-tab--on", tab.name == "tab-" + _tab);
+            var footer = shell[shell.childCount - 1];
+            footer.Q<Label>("footer-publisher").style.display = _tab == "assets" ? DisplayStyle.Flex : DisplayStyle.None;
+            footer.Q<Label>("footer-note").style.display = _tab == "assets" ? DisplayStyle.None : DisplayStyle.Flex;
+            var review = footer.Q<VisualElement>("footer-review");
+            bool rated = TombstackSdkWelcomePrompts.ReviewDone(_context);
+            review.EnableInClassList("abw-btn--quiet", rated);
+            review.EnableInClassList("abw-review-cta", !rated);
+            review.Q<Label>().text = rated ? "Leave a review" : "\u2605  Leave a review";
         }
 
         // -- Small builders shared by the partials --------------------------

@@ -10,11 +10,11 @@ your Tombstack account. Requires **Unity 6 (6000.0)** or newer.
 
 ### 1. Install
 
-- **Tarball (recommended):** download `com.anklebreaker.tombstack-0.21.2.tgz` from
-  `https://tombstack.com/downloads/com.anklebreaker.tombstack-0.21.2.tgz`, then
+- **Tarball (recommended):** download `com.anklebreaker.tombstack-0.21.3.tgz` from
+  `https://tombstack.com/downloads/com.anklebreaker.tombstack-0.21.3.tgz`, then
   Package Manager ▸ `+` ▸ *Add package from tarball…*
 - Or Package Manager ▸ `+` ▸ *Add package from git URL…* →
-  `https://github.com/AnkleBreaker-Studio/tombstack-unity.git#v0.21.2`
+  `https://github.com/AnkleBreaker-Studio/tombstack-unity.git#v0.21.3`
 
 ### 2. Sign in (mandatory)
 

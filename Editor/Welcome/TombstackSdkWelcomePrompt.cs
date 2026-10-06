@@ -48,6 +48,7 @@ namespace AnkleBreaker.Tombstack.Editor.Welcome
         private static double s_waitStarted = -1;
         private static TombstackSdkWelcomeContext s_discoverContext;
         private static Offer s_offer;
+        private static bool s_consumer;
 
         static TombstackSdkWelcomePrompts()
         {
@@ -228,6 +229,7 @@ namespace AnkleBreaker.Tombstack.Editor.Welcome
         private static void Stop(bool sessionDone)
         {
             EditorApplication.update -= Tick;
+            if (s_consumer) { s_consumer = false; TombstackSdkWelcomeServices.ReleaseConsumer(); }
             if (sessionDone) SessionState.SetBool(SESSION_DONE, true);
         }
 
@@ -274,6 +276,7 @@ namespace AnkleBreaker.Tombstack.Editor.Welcome
 
             // Discovery needs today's catalogue: prices and sales from an embedded copy are stale.
             s_discoverContext = context;
+            if (!s_consumer) { s_consumer = true; TombstackSdkWelcomeServices.AcquireConsumer(); }
             s_waitStarted = t;
             TombstackSdkWelcomeServices.RefreshCatalog(catalog, true);
         }
@@ -291,15 +294,15 @@ namespace AnkleBreaker.Tombstack.Editor.Welcome
                 TombstackSdkCatalog catalog = TombstackSdkWelcomeServices.LoadCatalog(context);
                 s_offer = FindOffer(catalog.products, context.Config.id, TombstackSdkWelcomeServices.IsInstalled, DiscoverBaseline(now), SeenOffers());
                 if (!s_offer.Any) { Stop(true); return; }
-                TombstackSdkWelcomeServices.QueueCards(catalog);
+                TombstackSdkWelcomeServices.QueueCards(new TombstackSdkCatalog { products = new[] { s_offer.Featured } });
                 s_waitStarted = t;
                 return;
             }
             // A text-only popup sells less than the Card: give the download a few seconds.
-            bool cardReady = File.Exists(TombstackSdkWelcomeServices.CachedCardPath(s_offer.Featured));
+            bool cardReady = TombstackSdkWelcomeServices.Card(context, s_offer.Featured) != null;
             if (!cardReady && t - s_waitStarted < CARD_WAIT_S) return;
-            Claim(now);
             TombstackSdkWelcomePromptWindow.ShowDiscover(context, TombstackSdkWelcomeServices.LoadCatalog(context), s_offer);
+            Claim(now);
         }
 
         private static void Claim(DateTime now)
@@ -372,7 +375,14 @@ namespace AnkleBreaker.Tombstack.Editor.Welcome
         /// <summary>Not restored with the layout: a prompt belongs to the session that raised it.</summary>
         private void OnEnable()
         {
+            TombstackSdkWelcomeServices.AcquireConsumer();
             if (_context == null) EditorApplication.delayCall += () => { if (this != null && _context == null) Close(); };
+        }
+
+        private void OnDisable()
+        {
+            rootVisualElement.Clear();
+            TombstackSdkWelcomeServices.ReleaseConsumer();
         }
 
         private void OnDestroy()
@@ -400,13 +410,7 @@ namespace AnkleBreaker.Tombstack.Editor.Welcome
             TombstackSdkWelcomeData config = _context.Config;
             var head = new VisualElement();
             head.AddToClassList("abw-prompt__head");
-            Texture2D icon = TombstackSdkWelcomeServices.LoadImage(_context.Media(config.icon));
-            if (icon != null)
-            {
-                var image = new Image { image = icon, scaleMode = ScaleMode.ScaleToFit };
-                image.AddToClassList("abw-prompt__icon");
-                head.Add(image);
-            }
+            head.Add(TombstackSdkWelcome.LiveImage(() => TombstackSdkWelcomeServices.LoadImage(_context.Media(config.icon)), "abw-prompt__icon", path: _context.Media(config.icon)));
             var text = new VisualElement();
             text.AddToClassList("abw-prompt__text");
             string made = config.usage.phrase;
@@ -447,13 +451,8 @@ namespace AnkleBreaker.Tombstack.Editor.Welcome
         private void BuildDiscover(VisualElement shell)
         {
             TombstackSdkProduct featured = _offer.Featured;
-            Texture2D card = TombstackSdkWelcomeServices.Card(_context, featured);
-            if (card != null)
-            {
-                var image = new Image { image = card, scaleMode = ScaleMode.ScaleToFit };
-                image.AddToClassList("abw-prompt__card");
-                shell.Add(image);
-            }
+            if (position.height >= SIZE_DISCOVER.y)
+                shell.Add(TombstackSdkWelcome.LiveImage(() => TombstackSdkWelcomeServices.Card(_context, featured), "abw-prompt__card", path: TombstackSdkWelcomeServices.CachedCardPath(featured), fallbackPath: _context.Media("Media/Cards/" + featured.card)));
             var text = new VisualElement();
             text.AddToClassList("abw-prompt__text");
             text.Add(MakeLabel("ENJOYING " + (_context.Config.profile == "art" ? "OUR ASSETS" : "OUR TOOLS") + "?", "abw-prompt__eyebrow"));

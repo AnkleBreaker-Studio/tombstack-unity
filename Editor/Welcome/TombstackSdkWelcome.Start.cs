@@ -17,6 +17,7 @@ namespace AnkleBreaker.Tombstack.Editor.Welcome
 
         private void BuildToolStart(VisualElement host)
         {
+            using var perf = new TombstackSdkWelcomePerf.Scope("UI.BuildToolStart");
             TombstackSdkWelcomeData config = _context.Config;
             bool blocked = BuildToolStatus(host);
             BuildUpdateBand(host);
@@ -111,6 +112,7 @@ namespace AnkleBreaker.Tombstack.Editor.Welcome
 
         private void BuildHero(VisualElement host)
         {
+            using var perf = new TombstackSdkWelcomePerf.Scope("UI.Hero");
             TombstackSdkWelcomeData config = _context.Config;
             if (!TombstackSdkWelcomeServices.IsSet(config.hero)) return;
 
@@ -217,6 +219,7 @@ namespace AnkleBreaker.Tombstack.Editor.Welcome
 
         private void BuildStats(VisualElement host)
         {
+            using var perf = new TombstackSdkWelcomePerf.Scope("UI.Stats");
             TombstackSdkStat[] stats = _context.Config.stats;
             if (stats.Length == 0) return;
             VisualElement section = Section(host);
@@ -309,6 +312,7 @@ namespace AnkleBreaker.Tombstack.Editor.Welcome
 
         private void BuildArtStart(VisualElement host)
         {
+            using var perf = new TombstackSdkWelcomePerf.Scope("UI.BuildArtStart");
             TombstackSdkWelcomeData config = _context.Config;
             BuildPipelineBand(host);
             BuildHero(host);
@@ -330,6 +334,7 @@ namespace AnkleBreaker.Tombstack.Editor.Welcome
         /// built for another one renders magenta.</summary>
         private void BuildPipelineBand(VisualElement host)
         {
+            using var perf = new TombstackSdkWelcomePerf.Scope("UI.PipelineBand");
             TombstackSdkPipeline band = _context.Config.pipelineBand;
             string folder = _context.Resolve(band.materials);
             string pipeline = TombstackSdkWelcomeServices.PipelineLabel(TombstackSdkWelcomeServices.ActivePipeline());
@@ -371,6 +376,7 @@ namespace AnkleBreaker.Tombstack.Editor.Welcome
         /// pack of sixty rocks does not bury the rest of the column.</summary>
         private void BuildBoard(VisualElement host)
         {
+            using var perf = new TombstackSdkWelcomePerf.Scope("UI.PrefabBoard");
             TombstackSdkBoard board = _context.Config.board;
             string prefabs = _context.Resolve(board.prefabs);
             if ((board.prefabGuids == null || board.prefabGuids.Length == 0) && (string.IsNullOrEmpty(board.prefabs) || !AssetDatabase.IsValidFolder(prefabs))) return;
@@ -400,12 +406,11 @@ namespace AnkleBreaker.Tombstack.Editor.Welcome
                 tile.tooltip = name;
                 string iconPath = string.IsNullOrEmpty(board.icons) ? null : icons + "/" + name + ".png";
                 Texture2D icon = TombstackSdkWelcomeServices.LoadImage(iconPath);
-                var image = new Image { image = icon != null ? icon : AssetPreview.GetMiniThumbnail(prefab), scaleMode = ScaleMode.ScaleToFit };
-                image.AddToClassList("abw-tile__icon");
+                var image = LiveImage(() => { Texture2D loaded = TombstackSdkWelcomeServices.LoadImage(iconPath); return loaded != null ? loaded : AssetPreview.GetMiniThumbnail(prefab); }, "abw-tile__icon", path: iconPath);
                 tile.Add(image);
                 tile.Add(Text(TileLabel(name, common), "abw-tile__label"));
                 grid.Add(tile);
-                tiles.Add(new BoardTile { Element = tile, Image = image, Prefab = prefab, NeedsPreview = icon == null, Name = name });
+                tiles.Add(new BoardTile { Element = tile, Image = image, Prefab = prefab, NeedsPreview = icon == null && !TombstackSdkWelcomeImages.HasUsableFile(iconPath), Name = name });
             }
 
             VisualElement group = null;
@@ -522,6 +527,7 @@ namespace AnkleBreaker.Tombstack.Editor.Welcome
 
         private void BuildTie(VisualElement host)
         {
+            using var perf = new TombstackSdkWelcomePerf.Scope("UI.ArtTie");
             TombstackSdkTie tie = _context.Config.tie;
             if (string.IsNullOrEmpty(tie.product)) return;
             TombstackSdkProduct product = _catalog.products.FirstOrDefault(p => p.id == tie.product);

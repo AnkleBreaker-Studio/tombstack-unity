@@ -2,6 +2,15 @@
 
 All notable changes to `com.anklebreaker.tombstack`.
 
+## [0.21.3] - 2026-10-06
+
+### Fixed
+- Update the Welcome window and hosted CLICKME inspector from the canonical AnkleBreaker templates.
+- Share catalogue requests and image ownership between visible consumers, cache project lookups, and refresh media without rebuilding the entire window or inspector.
+- Reuse tab panels and build optional content incrementally while preserving existing Welcome and review preferences.
+
+Session budgeting is unchanged: custom events and metrics are capped at 60 rows per session per 30 minutes for non-paying studios once the server has announced the budget; paid plans and studios on a raised ingest capacity are not capped. Crashes, bug reports and heartbeats are never affected.
+
 ## [0.21.2] - 2026-10-05
 
 ### Changed — no client-side refusal before the server has answered

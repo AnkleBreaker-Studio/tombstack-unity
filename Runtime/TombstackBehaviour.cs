@@ -82,7 +82,7 @@ namespace AnkleBreaker.Tombstack
         /// <summary>This package's version. MUST equal <c>unity/package.json</c>'s "version" -
         /// tests/unity-client-header.test.ts reads both and fails the suite if they drift, because a
         /// version string that lies is worse than no version string at all.</summary>
-        private const string SDK_VERSION = "0.21.2";
+        private const string SDK_VERSION = "0.21.3";
         private const string CLIENT_HEADER_VALUE = "unity/" + SDK_VERSION;
         // §K1: name of the auto round-trip metric emitted after each successful ingest POST.
         private const string RTT_METRIC_NAME = "tombstack.rtt_ms";
