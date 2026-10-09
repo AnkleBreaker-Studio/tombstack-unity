@@ -9,7 +9,7 @@ namespace AnkleBreaker.Tombstack
     /// <summary>
     /// Bounded rolling session log. Every Unity log line is mirrored into an in-memory pending
     /// buffer (any thread, lock-protected, reused StringBuilder — no per-line concatenation) and
-    /// flushed to <c>persistentDataPath/Tombstack/session-&lt;sessionId&gt;.log</c> off the main
+    /// flushed to <c>&lt;state folder&gt;/session-&lt;sessionId&gt;.log</c> (TombstackInstanceLock) off the main
     /// thread, at most once per flush interval (driven by <see cref="TombstackBehaviour"/>) plus a
     /// synchronous final flush on the crash path and on clean quit. The file is capped at ~512 KB
     /// with a truncate-from-front trim (newest lines win).
@@ -28,7 +28,6 @@ namespace AnkleBreaker.Tombstack
     /// </summary>
     internal static class TombstackSessionLog
     {
-        private const string DIR_NAME = "Tombstack";
         // Legacy fixed names from pre-v0.18 SDKs — migrated to keyed names at RotateForNewSession.
         private const string LEGACY_CURRENT_LOG_NAME = "session.log";
         private const string LEGACY_PREVIOUS_LOG_NAME = "previous-session.log";
@@ -42,7 +41,6 @@ namespace AnkleBreaker.Tombstack
         private const int TRIMMED_LOG_BYTES = MAX_LOG_BYTES / 2;
         private const int MAX_PENDING_CHARS = 64 * 1024;
         private const int PENDING_CAPACITY = 4 * 1024;
-        private const string TIMESTAMP_FORMAT = "yyyy-MM-ddTHH:mm:ss.fffZ";
         // Sanitized session id in a filename: keep [A-Za-z0-9_-], capped so a hostile/huge id can't
         // blow the path length. Session ids are GUID "N" (32 hex) in practice — the cap is slack.
         private const int MAX_SESSION_ID_FILENAME = 64;
@@ -71,17 +69,19 @@ namespace AnkleBreaker.Tombstack
         private static bool _warned; // warn-once latch: a failing disk must never spam or feedback-loop
 
         /// <summary>
-        /// Cache paths once on the main thread at Init — <c>Application.persistentDataPath</c>
-        /// is not safe to read off the main thread, and the flush worker runs on the pool. The
+        /// Cache paths once on the main thread at Init — <c>stateDir</c> derives from
+        /// <c>Application.persistentDataPath</c>, which is not safe to read off the main thread, and
+        /// the flush worker runs on the pool. <c>stateDir</c> is this process's own folder
+        /// (TombstackInstanceLock), so concurrent processes never prune each other's logs. The
         /// current session's log is <c>session-&lt;sessionId&gt;.log</c>; <paramref name="retainedLogs"/>
         /// is how many recent session logs to keep (clamped to 1..10).
         /// </summary>
-        internal static void Configure(string persistentDataPath, string sessionId, int retainedLogs)
+        internal static void Configure(string stateDir, string sessionId, int retainedLogs)
         {
             try
             {
-                if (string.IsNullOrEmpty(persistentDataPath) || string.IsNullOrEmpty(sessionId)) return;
-                _dirPath = Path.Combine(persistentDataPath, DIR_NAME);
+                if (string.IsNullOrEmpty(stateDir) || string.IsNullOrEmpty(sessionId)) return;
+                _dirPath = stateDir;
                 _sessionId = sessionId;
                 _retainedLogs = clampRetained(retainedLogs);
                 _currentPath = Path.Combine(_dirPath, sessionLogFileName(sessionId));
@@ -164,7 +164,7 @@ namespace AnkleBreaker.Tombstack
         internal static void Append(string level, string message, string stackTrace)
         {
             if (_currentPath == null || string.IsNullOrEmpty(message)) return;
-            var ts = DateTime.UtcNow.ToString(TIMESTAMP_FORMAT);
+            var ts = TombstackTime.NowIso();
             lock (_pendingLock)
             {
                 if (_pending.Length >= MAX_PENDING_CHARS)
@@ -220,6 +220,17 @@ namespace AnkleBreaker.Tombstack
             lock (_fileLock)
             {
                 return tryRead(_currentPath, out bytes);
+            }
+        }
+
+        /// <summary>Session id of the most-recent PRIOR log (null when none): the session
+        /// <see cref="TryReadPreviousLog"/> reads.</summary>
+        internal static string PreviousSessionId
+        {
+            get
+            {
+                var path = _previousPath;
+                return path == null ? null : sessionIdFromPath(path);
             }
         }
 

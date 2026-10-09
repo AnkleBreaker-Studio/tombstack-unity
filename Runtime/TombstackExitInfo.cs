@@ -1,4 +1,5 @@
 using System;
+using System.Globalization;
 #if UNITY_ANDROID && !UNITY_EDITOR
 using UnityEngine;
 #endif
@@ -150,8 +151,9 @@ namespace AnkleBreaker.Tombstack
                     return make("anr", "REASON_ANR", 0, rssBytes, "anr-kill",
                         "App Not Responding — killed by the OS watchdog");
                 case REASON_SIGNALED:
-                    return make("signal", "REASON_SIGNALED", status, rssBytes, $"native-signal-{status}",
-                        $"Killed by signal {status}{signalName(status)}");
+                    return make("signal", "REASON_SIGNALED", status, rssBytes,
+                        "native-signal-" + status.ToString(CultureInfo.InvariantCulture),
+                        "Killed by signal " + status.ToString(CultureInfo.InvariantCulture) + signalName(status));
                 case REASON_CRASH_NATIVE:
                     return make("native_crash", "REASON_CRASH_NATIVE", 0, rssBytes, "native-crash",
                         "Native crash in the previous session (OS-reported)");
@@ -205,7 +207,7 @@ namespace AnkleBreaker.Tombstack
                 case REASON_DEPENDENCY_DIED: return "REASON_DEPENDENCY_DIED";
                 case REASON_FREEZER: return "REASON_FREEZER";
                 case REASON_OTHER: return "REASON_OTHER";
-                default: return $"REASON_{reason}";
+                default: return "REASON_" + reason.ToString(CultureInfo.InvariantCulture);
             }
         }
 

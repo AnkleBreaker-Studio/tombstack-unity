@@ -1,4 +1,5 @@
 using System;
+using System.Globalization;
 using System.Threading;
 
 namespace AnkleBreaker.Tombstack
@@ -132,8 +133,8 @@ namespace AnkleBreaker.Tombstack
                 }
                 int slash = v.IndexOf('/');
                 if (slash <= 0) return;
-                if (!int.TryParse(v.Substring(0, slash), out int rows) || rows <= 0) return;
-                if (!int.TryParse(v.Substring(slash + 1), out int window) || window != WINDOW_SECONDS) return;
+                if (!int.TryParse(v.Substring(0, slash), NumberStyles.Integer, CultureInfo.InvariantCulture, out int rows) || rows <= 0) return;
+                if (!int.TryParse(v.Substring(slash + 1), NumberStyles.Integer, CultureInfo.InvariantCulture, out int window) || window != WINDOW_SECONDS) return;
                 Volatile.Write(ref _serverLimit, rows);
             }
             catch

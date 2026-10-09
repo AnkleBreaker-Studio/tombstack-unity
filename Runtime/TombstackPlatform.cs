@@ -29,12 +29,15 @@ namespace AnkleBreaker.Tombstack
             {
                 case RuntimePlatform.WindowsPlayer:
                 case RuntimePlatform.WindowsEditor:
+                case RuntimePlatform.WindowsServer: // Dedicated Server build target
                     return "windows";
                 case RuntimePlatform.OSXPlayer:
                 case RuntimePlatform.OSXEditor:
+                case RuntimePlatform.OSXServer:
                     return "macos";
                 case RuntimePlatform.LinuxPlayer:
                 case RuntimePlatform.LinuxEditor:
+                case RuntimePlatform.LinuxServer:
                     return "linux";
                 case RuntimePlatform.Android:
                     return "android";

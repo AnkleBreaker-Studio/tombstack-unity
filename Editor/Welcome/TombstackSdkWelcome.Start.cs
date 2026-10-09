@@ -531,7 +531,7 @@ namespace AnkleBreaker.Tombstack.Editor.Welcome
             TombstackSdkTie tie = _context.Config.tie;
             if (string.IsNullOrEmpty(tie.product)) return;
             TombstackSdkProduct product = _catalog.products.FirstOrDefault(p => p.id == tie.product);
-            if (product == null) return;
+            if (!TombstackSdkWelcomeServices.CanRecommend(product, RecommendationsOnly)) return;
 
             var card = new VisualElement();
             card.AddToClassList("abw-tie");

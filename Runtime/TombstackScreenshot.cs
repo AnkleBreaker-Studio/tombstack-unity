@@ -1,7 +1,9 @@
 using System;
 using System.Collections;
 using System.Security.Cryptography;
+using System.Threading;
 using UnityEngine;
+using UnityEngine.Experimental.Rendering;
 
 namespace AnkleBreaker.Tombstack
 {
@@ -49,16 +51,83 @@ namespace AnkleBreaker.Tombstack
         internal static bool OnMainThread =>
             MainThreadId != -1 && System.Threading.Thread.CurrentThread.ManagedThreadId == MainThreadId;
 
+        /// <summary>Raw pixels grabbed on the main thread, PNG-encoded later off it.</summary>
+        internal struct RawFrame
+        {
+            public byte[] Pixels;
+            public GraphicsFormat Format;
+            public int Width;
+            public int Height;
+        }
+
         /// <summary>
-        /// Synchronous best-effort grab for the exception path (a crash may be fatal, so we must not
-        /// wait for end-of-frame nor delay the durable crash enqueue). Returns null off the main
-        /// thread or on any failure — the crash then ships with no screenshot. Never throws/blocks.
+        /// Synchronous grab for the exception path, which runs inside Unity's log callback: only the
+        /// GPU readback (and downscale) happens here. The PNG encode and hash, tens of milliseconds
+        /// for a full frame, used to run here too and stalled the frame that threw; they now run in
+        /// <see cref="EncodeAsync"/>. Null off the main thread or on any failure. Never throws.
         /// </summary>
-        internal static Shot? CaptureSync(int maxDimension)
+        internal static RawFrame? CaptureRawSync(int maxDimension)
         {
             if (!OnMainThread) return null;
             _lastCaptureAt = Now;
-            return grabAndEncode(maxDimension);
+            Texture2D full = null;
+            Texture2D scaled = null;
+            try
+            {
+                full = ScreenCapture.CaptureScreenshotAsTexture();
+                if (full == null) return null;
+                var src = full;
+                if (maxDimension > 0 && (full.width > maxDimension || full.height > maxDimension))
+                {
+                    scaled = downscale(full, maxDimension);
+                    if (scaled != null) src = scaled;
+                }
+                var pixels = src.GetRawTextureData();
+                if (pixels == null || pixels.Length == 0) return null;
+                return new RawFrame { Pixels = pixels, Format = src.graphicsFormat, Width = src.width, Height = src.height };
+            }
+            catch (Exception e)
+            {
+                TombstackLog.Warn("screenshot capture failed: " + e.Message);
+                return null;
+            }
+            finally
+            {
+                if (full != null) UnityEngine.Object.Destroy(full);
+                if (scaled != null) UnityEngine.Object.Destroy(scaled);
+            }
+        }
+
+        /// <summary>PNG-encode and hash <paramref name="frame"/> on the thread pool
+        /// (<c>ImageConversion.EncodeArrayToPNG</c> is thread-safe), then hand the result to
+        /// <paramref name="onComplete"/> on that thread (null on failure). Never throws.</summary>
+        internal static void EncodeAsync(RawFrame frame, Action<Shot?> onComplete)
+        {
+            WaitCallback work = _ =>
+            {
+                Shot? shot = null;
+                try
+                {
+                    byte[] png = ImageConversion.EncodeArrayToPNG(
+                        frame.Pixels, frame.Format, (uint)frame.Width, (uint)frame.Height);
+                    if (png != null && png.Length > 0)
+                        shot = new Shot { Bytes = png, Size = png.Length, Sha256 = sha256Hex(png) };
+                }
+                catch (Exception e)
+                {
+                    TombstackLog.Warn("screenshot encode failed: " + e.Message);
+                }
+                onComplete?.Invoke(shot);
+            };
+            try
+            {
+                ThreadPool.QueueUserWorkItem(work);
+            }
+            catch (Exception e)
+            {
+                TombstackLog.Warn("screenshot encode could not be scheduled: " + e.Message);
+                onComplete?.Invoke(null);
+            }
         }
 
         /// <summary>

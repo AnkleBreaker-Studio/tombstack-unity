@@ -74,6 +74,7 @@ namespace AnkleBreaker.Tombstack.Editor.Welcome
         public TombstackSdkPipeline pipelineBand = new TombstackSdkPipeline();
 
         public TombstackSdkShowcase showcase = new TombstackSdkShowcase();
+        public bool recommendationsOnly;
         public bool studioTab = true;
         public TombstackSdkStudio studio = new TombstackSdkStudio();
     }

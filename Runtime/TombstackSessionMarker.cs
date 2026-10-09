@@ -44,7 +44,6 @@ namespace AnkleBreaker.Tombstack
     /// </summary>
     internal static class TombstackSessionMarker
     {
-        private const string DIR_NAME = "Tombstack";
         private const string MARKER_NAME = "session.lock";
 
         private static string _dirPath;
@@ -55,13 +54,14 @@ namespace AnkleBreaker.Tombstack
         // the publish/consume of this reference needs acquire/release ordering.
         private static volatile SessionMarkerData _current;
 
-        /// <summary>Cache paths once on the main thread at Init (persistentDataPath rule).</summary>
-        internal static void Configure(string persistentDataPath)
+        /// <summary>Cache paths once on the main thread at Init. <paramref name="stateDir"/> is this
+        /// process's own folder (TombstackInstanceLock), so concurrent processes never share a marker.</summary>
+        internal static void Configure(string stateDir)
         {
             try
             {
-                if (string.IsNullOrEmpty(persistentDataPath)) return;
-                _dirPath = Path.Combine(persistentDataPath, DIR_NAME);
+                if (string.IsNullOrEmpty(stateDir)) return;
+                _dirPath = stateDir;
                 _markerPath = Path.Combine(_dirPath, MARKER_NAME);
             }
             catch (Exception e)

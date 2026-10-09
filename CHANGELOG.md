@@ -2,6 +2,67 @@
 
 All notable changes to `com.anklebreaker.tombstack`.
 
+## [0.21.5] - 2026-10-09
+
+### Fixed
+- Timestamps are formatted with the invariant culture. On a player whose system locale uses another
+  calendar (Thai) or time separator, every timestamp was rejected by the server (HTTP 400) and the
+  crash, bug report, event or heartbeat carrying it was deleted as poison.
+- The offline queue no longer reads `identity.json` as a queued payload. It shares that folder, so
+  each launch deleted the persisted device id; where the device has no stable identifier the player
+  got a new id on every launch.
+- Each running process keeps its own state folder. Several processes on one machine (dedicated
+  servers on one host, a player beside the Editor) shared `session.lock` and the offline queue: a
+  live process was reported as an unclean shutdown, a real crash could be hidden when another
+  process deleted the marker, and queued payloads were sent by the wrong process. The first process
+  keeps `Tombstack/`; the others use `Tombstack/instances/<n>/`.
+- Consent is enforced at upload time. `SetConsent(false)` only cleared breadcrumbs: queued crashes,
+  events and batches still went out, and the previous run's offline queue was sent at startup before
+  the game could ask for consent. Now nothing leaves the device without consent, revoking discards
+  the upload queue, the event/metric buffers and the offline queue on disk (payloads captured before
+  a revoke are never sent, even after a new grant), and with RequireConsent the previous run's
+  offline queue is read only once consent is granted. Log-pull requests made by a dedicated server
+  are server actions and are not affected.
+- The final event/metric batches at quit are written to the offline queue before they are sent,
+  like the pause batches already were. The send coroutine never resumes after quit, so a failed or
+  unfinished request was never persisted and the last minute of events was lost. Payloads still
+  queued, in flight or waiting out a retry at quit are persisted too.
+- A game reset that destroys every `DontDestroyOnLoad` object no longer stops the SDK. The hidden
+  `[Tombstack]` host recreates itself (except while quitting) and re-queues the uploads its
+  coroutines held. Each upload request is now disposed in a `finally`, so an exception can no
+  longer leak it.
+- Upload retries are jittered (each backoff is 50–100% of its nominal 2s→32s value), so clients that
+  failed together do not retry in lockstep. A payload that spends its retries is no longer held until
+  the next launch: it stays parked (backed by its offline-queue file) and is re-sent on a jittered
+  backoff from 1 minute up to 30 minutes, sooner once the endpoint answers again. A dedicated server
+  running for weeks used to keep everything from an outage until it restarted.
+- A non-fatal exception left in the offline queue no longer hides the previous session's real death.
+  Any restored crash record suppressed the unclean-shutdown report, so a native crash or OOM kill
+  went unreported whenever a handled exception from that session (or an older one) had not been
+  delivered yet. Only a fatal crash of that same session now stands in for it. Queued reports also
+  remember their session, so one sent on a later launch uploads its own session's log instead of
+  whichever log happened to be the most recent prior one.
+- `ReportBug` no longer loses the report when no screenshot can be taken. Called off the main thread
+  it threw inside the SDK; in batch mode or without a graphics device the end-of-frame it waited for
+  never came. In those cases the report now goes out at once without a screenshot.
+- Dedicated Server builds report `os` as `windows`, `macos` or `linux` instead of `other`
+  (`RuntimePlatform.WindowsServer` / `OSXServer` / `LinuxServer` were not mapped).
+- Deleting a delivered payload's offline-queue file no longer happens on the main thread.
+- With *Capture Screenshot On Exception* on, the PNG encode and hash run on the thread pool instead
+  of inside Unity's log callback, where they stalled the frame that threw. Only the GPU readback
+  stays on the main thread. A fatal crash no longer waits for a screenshot at all.
+- The environment label (`Init` / `SetEnvironment` / the config asset) is trimmed and stripped of
+  leading underscores. The server rejects a label starting with `__` (reserved for its
+  all-environments partitions), and the label rides every payload, so one such value made all of
+  the session's telemetry a rejected, deleted 400.
+
+### Changed
+- The Welcome window downloads its catalogue images several at a time (up to six) instead of one by
+  one, so the Home, Assets and Studio cards fill in about a quarter of the time. The Welcome change
+  touches no telemetry, session budget, preference or CLICKME behavior.
+
+Session budgeting is unchanged: custom events and metrics are capped at 60 rows per session per 30 minutes for non-paying studios once the server has announced the budget; paid plans and studios on a raised ingest capacity are not capped. Crashes, bug reports and heartbeats are never affected.
+
 ## [0.21.4] - 2026-10-06
 
 ### Fixed

@@ -18,6 +18,7 @@
   "tagline": "Crash, exception and session telemetry for Unity — by AnkleBreaker Studio",
   "version": "",
   "storeVersion": false,
+  "recommendationsOnly": false,
   "_whyVersion": "Empty: the Welcome shows the SDK's own package.json version. storeVersion false: the catalogue's Tombstack version is the Asset Store package's (1.x), unrelated to the SDK's (0.x).",
   "ownAssembly": "AnkleBreaker.Tombstack.Editor",
   "requires": [],

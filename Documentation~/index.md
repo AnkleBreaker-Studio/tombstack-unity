@@ -10,11 +10,11 @@ your Tombstack account. Requires **Unity 6 (6000.0)** or newer.
 
 ### 1. Install
 
-- **Tarball (recommended):** download `com.anklebreaker.tombstack-0.21.4.tgz` from
-  `https://tombstack.com/downloads/com.anklebreaker.tombstack-0.21.4.tgz`, then
+- **Tarball (recommended):** download `com.anklebreaker.tombstack-0.21.5.tgz` from
+  `https://tombstack.com/downloads/com.anklebreaker.tombstack-0.21.5.tgz`, then
   Package Manager ▸ `+` ▸ *Add package from tarball…*
 - Or Package Manager ▸ `+` ▸ *Add package from git URL…* →
-  `https://github.com/AnkleBreaker-Studio/tombstack-unity.git#v0.21.4`
+  `https://github.com/AnkleBreaker-Studio/tombstack-unity.git#v0.21.5`
 
 ### 2. Sign in (mandatory)
 
@@ -126,6 +126,8 @@ calls `Tombstack.SetConsent(true)`.
 | `identity.json` (0.16+) | The persisted device-derived provisional id (`dev_…`) used until `SetUser(realId)` |
 | `session.lock` | Dirty-session marker (present while running; gone after a clean quit) |
 | `*.json` | Write-ahead upload queue (crashes/bugs that have not been delivered yet) |
+| `instance.lock` | Held by the running process that owns this folder |
+| `instances/<n>/` | The same files (except `identity.json`) for each additional process running at the same time, e.g. several dedicated servers on one host |
 
 ## Project Settings
 

@@ -88,6 +88,18 @@ namespace AnkleBreaker.Tombstack
             get { lock (_lock) { return _count > 0; } }
         }
 
+        /// <summary>Discard every buffered item (consent revoked). Not counted as a drop: the data was
+        /// withdrawn by the player, not lost by the SDK. Allocation-free.</summary>
+        public void Clear()
+        {
+            lock (_lock)
+            {
+                Array.Clear(_items, 0, _items.Length);
+                _head = 0;
+                _count = 0;
+            }
+        }
+
         /// <summary>Drain the next byte-bounded envelope, preserving the remaining items.</summary>
         public string DrainEnvelope(string sentAtIso)
         {

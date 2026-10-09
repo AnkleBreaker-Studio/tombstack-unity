@@ -223,6 +223,9 @@ namespace AnkleBreaker.Tombstack
         private static bool _captureScreenshotOnException = false;
         private static int _screenshotMaxDimension = 1280;
         private static float _exceptionScreenshotThrottleSeconds = 10f;
+        // Cached at Init (main thread): false in batch mode or without a graphics device (headless
+        // servers, CI), where the end-of-frame a screenshot waits for never comes.
+        private static bool _screenshotsSupported;
         // v0.9 autonomy toggles — default ON; overridden from TombstackConfigSO at auto-init.
         private static bool _autoRttMetric = true;        // §K1: auto tombstack.rtt_ms after each ingest POST
         private static bool _autoSceneBreadcrumbs = true; // §K2: auto breadcrumb on scene load / active change
@@ -546,6 +549,7 @@ namespace AnkleBreaker.Tombstack
                 _captureScreenshotOnException = false;
                 _screenshotMaxDimension = 1280;
                 _exceptionScreenshotThrottleSeconds = 10f;
+                _screenshotsSupported = false;
                 _autoRttMetric = true;
                 _autoSceneBreadcrumbs = true;
                 _detectAppHangs = true;
@@ -688,8 +692,9 @@ namespace AnkleBreaker.Tombstack
                 // Environment precedence: an explicit SetEnvironment call (even BEFORE Init — early
                 // bootstrap bridges do this) always wins over Init's param / the config asset value;
                 // otherwise apply the Init value; otherwise keep the "production" default.
-                if (!_environmentExplicit && !string.IsNullOrEmpty(environment))
-                    _environment = truncate(environment, MAX_ENVIRONMENT);
+                var initEnvironment = cleanEnvironment(environment);
+                if (!_environmentExplicit && initEnvironment != null)
+                    _environment = initEnvironment;
                 _buildVersion = TombstackPlatform.BuildVersion();
                 _os = TombstackPlatform.Os();
                 _arch = TombstackPlatform.Arch();
@@ -698,6 +703,16 @@ namespace AnkleBreaker.Tombstack
                 try { _device = TombstackDevice.Capture(); }
                 catch (Exception e) { TombstackLog.Warn($"device capture failed: {e.Message}"); }
                 _isEditor = Application.isEditor;
+                try
+                {
+                    _screenshotsSupported = !Application.isBatchMode
+                        && SystemInfo.graphicsDeviceType != UnityEngine.Rendering.GraphicsDeviceType.Null;
+                }
+                catch (Exception e)
+                {
+                    _screenshotsSupported = false;
+                    TombstackLog.Warn($"screenshot support check failed: {e.Message}");
+                }
                 // v0.16 device identity: acquire the persistent device-derived provisional id on the
                 // main thread, BEFORE the session can start beating, so no payload ever ships
                 // anonymous. Salted with the game token (same device → different id per game); the
@@ -716,9 +731,12 @@ namespace AnkleBreaker.Tombstack
 
                 // Main-thread-only values (persistentDataPath) are cached here, like
                 // version/os/arch above — everything after this point may run off-thread.
-                var persistentDataPath = Application.persistentDataPath;
-                TombstackSessionLog.Configure(persistentDataPath, _sessionId, _retainedLaunchLogs);
-                TombstackSessionMarker.Configure(persistentDataPath);
+                // Each live process gets its own state folder (marker, offline queue, session logs), so
+                // several servers on one host, or a player beside the Editor, never read or delete each
+                // other's files.
+                var stateDir = TombstackInstanceLock.Acquire(Application.persistentDataPath);
+                TombstackSessionLog.Configure(stateDir, _sessionId, _retainedLaunchLogs);
+                TombstackSessionMarker.Configure(stateDir);
 
                 // Local file bookkeeping (not capture, so not consent-gated): preserve the
                 // previous run's log for next-launch upload and read its dirty-session marker.
@@ -734,7 +752,7 @@ namespace AnkleBreaker.Tombstack
                 if (_autoCaptureExceptions && (!_isEditor || _sendExceptionsInEditor)) hookBackgroundExceptionSources();
                 Application.quitting += onQuitting;
 
-                TombstackBehaviour.Bootstrap(_endpoint, _gameToken, _sessionId, heartbeatIntervalSeconds);
+                TombstackBehaviour.Bootstrap(_endpoint, _gameToken, _sessionId, heartbeatIntervalSeconds, stateDir);
                 // Both gates: the config toggle AND the runtime auto-breadcrumb switch (a
                 // pre-init SetCaptureEnabled(Breadcrumbs, false) must survive Init).
                 if (_autoSceneBreadcrumbs && _autoBreadcrumbs) hookSceneBreadcrumbs();
@@ -942,7 +960,7 @@ namespace AnkleBreaker.Tombstack
         {
             try
             {
-                var cleaned = truncate(environment, MAX_ENVIRONMENT);
+                var cleaned = cleanEnvironment(environment);
                 if (!string.IsNullOrEmpty(cleaned))
                 {
                     _environment = cleaned;
@@ -1084,7 +1102,11 @@ namespace AnkleBreaker.Tombstack
 
         /// <summary>
         /// Toggle capture + upload (store-policy / GDPR consent). While false, nothing is
-        /// recorded or sent — including heartbeats, breadcrumbs, and analytics events.
+        /// recorded or sent — including heartbeats, breadcrumbs, and analytics events. Revoking
+        /// (true → false) also discards everything captured but not yet delivered: the upload queue,
+        /// the event/metric buffers and the offline queue on disk. With RequireConsent, the previous
+        /// run's offline queue is not read or sent until consent is granted. To defer a decision
+        /// without discarding, leave consent at its RequireConsent default instead of passing false.
         /// </summary>
         /// <param name="granted">True once the player has accepted telemetry.</param>
         public static void SetConsent(bool granted)
@@ -1100,8 +1122,13 @@ namespace AnkleBreaker.Tombstack
                 // write + unclean-shutdown report) exactly once.
                 if (granted && _initialized) startSessionTracking();
                 // Consent revoked: purge buffered breadcrumbs so the pre-revoke trail can't
-                // attach to a crash captured after consent is re-granted (GDPR scoping).
-                else if (!granted && wasGranted) clearBreadcrumbs();
+                // attach to a crash captured after consent is re-granted (GDPR scoping), and
+                // everything captured but not yet delivered (memory queues + the offline queue).
+                else if (!granted && wasGranted)
+                {
+                    clearBreadcrumbs();
+                    TombstackBehaviour.PurgeForRevokedConsent();
+                }
             }
             catch (Exception e)
             {
@@ -1272,7 +1299,11 @@ namespace AnkleBreaker.Tombstack
                     environment = _environment,
                     device = _device,
                 };
-                if (_captureScreenshotOnBugReport && TombstackBehaviour.HasInstance)
+                // The screenshot waits for the end of a rendered frame on the host. Off the main thread
+                // (StartCoroutine throws there) or in batch mode / without a graphics device (that
+                // end-of-frame never comes) the report used to be lost silently; it now ships without one.
+                if (_captureScreenshotOnBugReport && _screenshotsSupported && TombstackScreenshot.OnMainThread
+                    && TombstackBehaviour.HasInstance)
                 {
                     // Capture at end-of-frame on the host, then attach + enqueue + PUT the bytes.
                     // The report is never blocked or lost — capture failure just ships no screenshot.
@@ -1934,30 +1965,29 @@ namespace AnkleBreaker.Tombstack
                 environment = _environment,
                 device = _device,
             };
-            // Opt-in exception screenshot: synchronous best-effort grab (main-thread only, throttled).
-            // Never delays or drops the durable crash — on any miss the crash ships with no screenshot
-            // (payload.screenshot stays null → JsonUtility emits {size:0} → server presigns nothing).
-            byte[] shotBytes = null;
-            if (_captureScreenshotOnException && TombstackScreenshot.OnMainThread
-                && TombstackScreenshot.ThrottleAllows(_exceptionScreenshotThrottleSeconds))
-            {
-                var shot = TombstackScreenshot.CaptureSync(_screenshotMaxDimension);
-                if (shot.HasValue)
-                {
-                    payload.screenshot = new ScreenshotMeta { size = shot.Value.Size, sha256 = shot.Value.Sha256 };
-                    shotBytes = shot.Value.Bytes;
-                }
-            }
-
             // Pre-crash flush: deliver buffered events/metrics before the (possibly fatal) crash
             // path may end the process, so a final batch isn't lost when the app dies here.
             TombstackBehaviour.FlushBatches();
-            if (shotBytes != null)
-                TombstackBehaviour.EnqueueWithScreenshot(
-                    CRASHES_PATH, JsonUtility.ToJson(payload), UploadDurability.WriteAhead, payload.log, shotBytes);
+
+            // Opt-in exception screenshot (main thread only, throttled, never for a fatal crash, whose
+            // durable write must not wait). Only the GPU readback happens here, inside the log
+            // callback; the PNG encode + hash run on the thread pool and the crash is enqueued from
+            // there. On any miss the crash ships at once with no screenshot (payload.screenshot stays
+            // null → JsonUtility emits {size:0} → server presigns nothing).
+            TombstackScreenshot.RawFrame? frame = null;
+            if (!isFatal && _captureScreenshotOnException && _screenshotsSupported && TombstackScreenshot.OnMainThread
+                && TombstackScreenshot.ThrottleAllows(_exceptionScreenshotThrottleSeconds))
+            {
+                frame = TombstackScreenshot.CaptureRawSync(_screenshotMaxDimension);
+            }
+            if (frame.HasValue)
+            {
+                TombstackScreenshot.EncodeAsync(frame.Value, shot => enqueueCrash(payload, shot, isFatal));
+            }
             else
-                TombstackBehaviour.Enqueue(
-                    CRASHES_PATH, JsonUtility.ToJson(payload), UploadDurability.WriteAhead, payload.log);
+            {
+                enqueueCrash(payload, null, isFatal);
+            }
             raiseTelemetry("crash", payload.stackHint);
             // Final flush in the crash path: the on-disk log must include this crash even if
             // the process dies before the upload (the write-ahead record retries next launch
@@ -1968,6 +1998,33 @@ namespace AnkleBreaker.Tombstack
             {
                 if (isFatal || TombstackCrashThrottle.TryClaimSyncFlush(now)) TombstackSessionLog.FlushNow();
                 else TombstackSessionLog.RequestFlush();
+            }
+        }
+
+        /// <summary>Enqueue a crash write-ahead, with its screenshot when one was encoded. `fatal` is
+        /// persisted with the record: only a crash that ended the process may stand in for its
+        /// session's unclean-shutdown report on the next launch. Any thread; never throws.</summary>
+        private static void enqueueCrash(CrashPayload payload, TombstackScreenshot.Shot? shot, bool isFatal)
+        {
+            try
+            {
+                if (shot.HasValue)
+                {
+                    payload.screenshot = new ScreenshotMeta { size = shot.Value.Size, sha256 = shot.Value.Sha256 };
+                    TombstackBehaviour.EnqueueWithScreenshot(
+                        CRASHES_PATH, JsonUtility.ToJson(payload), UploadDurability.WriteAhead, payload.log,
+                        shot.Value.Bytes, fatal: isFatal);
+                }
+                else
+                {
+                    TombstackBehaviour.Enqueue(
+                        CRASHES_PATH, JsonUtility.ToJson(payload), UploadDurability.WriteAhead, payload.log,
+                        fatal: isFatal);
+                }
+            }
+            catch (Exception e)
+            {
+                TombstackLog.Warn($"crash enqueue failed: {e.Message}");
             }
         }
 
@@ -2122,7 +2179,7 @@ namespace AnkleBreaker.Tombstack
             _previousMarker = null;
             if (previous == null) return;
             // Deferred until the offline spool has been read (off the main thread since M7): whether a
-            // restored managed crash already represents this death is only known then.
+            // restored FATAL managed crash already represents this death is only known then.
             TombstackBehaviour.RunAfterQueueLoaded(() =>
             {
                 try { reportUncleanShutdown(previous); }
@@ -2132,15 +2189,16 @@ namespace AnkleBreaker.Tombstack
 
         /// <summary>
         /// Previous run left its marker behind → it died hard. Design rule (no double
-        /// reporting): when the write-ahead queue restored a managed crash from that session,
-        /// the death is already represented — that restored report retries now and its own
-        /// logUpload presign carries previous-session.log. Only when the queue held NO crash
-        /// (native crash, OOM kill, force quit) do we send this synthetic report, attaching
-        /// the preserved log to it instead.
+        /// reporting): when the write-ahead queue restored a FATAL managed crash (a terminating
+        /// unhandled exception) of that very session, the death is already represented — that
+        /// restored report retries now and its own logUpload presign carries that session's log.
+        /// Otherwise (native crash, OOM kill, force quit — including when only a non-fatal
+        /// exception of that session was waiting to be sent) we send this synthetic report,
+        /// attaching the preserved log to it instead.
         /// </summary>
         private static void reportUncleanShutdown(SessionMarkerData previous)
         {
-            if (TombstackBehaviour.HasRestoredCrash) return;
+            if (TombstackBehaviour.HasRestoredFatalCrash(previous.sessionId)) return;
 
             // Only a death while FOREGROUND-ACTIVE is a crash. A Play Mode stop in the Editor and a
             // backgrounded-then-killed app (user closed it / OS reclaimed a suspended app) are normal
@@ -2203,9 +2261,11 @@ namespace AnkleBreaker.Tombstack
                 environment = _environment, // same deployment; captured this launch (dead session's wasn't persisted)
                 device = _device, // same physical device; captured this launch (dead session's wasn't persisted)
             };
+            // The dead session's id rides with the record, so if this report only goes out on a later
+            // launch it still uploads THAT session's retained log.
             TombstackBehaviour.Enqueue(
                 CRASHES_PATH, JsonUtility.ToJson(payload), UploadDurability.WriteAhead,
-                payload.log, logFromPreviousSession: true);
+                payload.log, logFromPreviousSession: true, logSessionId: previous.sessionId);
         }
 
         /// <summary>Preallocate the ring so recording never allocates entry objects.</summary>
@@ -2323,7 +2383,7 @@ namespace AnkleBreaker.Tombstack
             return hex.ToString().Substring(0, SIGNATURE_HEX_LENGTH);
         }
 
-        private static string nowIso() => DateTime.UtcNow.ToString("yyyy-MM-ddTHH:mm:ss.fffZ");
+        private static string nowIso() => TombstackTime.NowIso();
 
         /// <summary>Mint a fresh id (GUID "N") — used for the session id and match ids.</summary>
         private static string newId() => Guid.NewGuid().ToString("N");
@@ -2340,5 +2400,17 @@ namespace AnkleBreaker.Tombstack
         }
 
         private static string nullIfEmpty(string value) => string.IsNullOrEmpty(value) ? null : value;
+
+        /// <summary>The environment label as every ingest schema accepts it (correlation-schema.ts): at
+        /// most 64 characters, and no leading "__" once trimmed (that prefix names the server's
+        /// all-environments partitions). The label rides every payload, so a bad one made each crash,
+        /// event, metric and heartbeat a 400 — poison, deleted. Leading underscores are stripped; null
+        /// when nothing is left, which callers treat as "keep the current label".</summary>
+        private static string cleanEnvironment(string value)
+        {
+            if (string.IsNullOrEmpty(value)) return null;
+            var label = truncate(value.Trim().TrimStart('_'), MAX_ENVIRONMENT).Trim();
+            return label.Length > 0 ? label : null;
+        }
     }
 }

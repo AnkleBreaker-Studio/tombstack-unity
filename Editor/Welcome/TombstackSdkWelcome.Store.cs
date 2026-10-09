@@ -41,8 +41,9 @@ namespace AnkleBreaker.Tombstack.Editor.Welcome
             List<TombstackSdkProduct> shelf = _catalog.products
                 .Where(p => !IsSelf(p) && !p.pinned && TopCategory(p) == "Tools")
                 .Where(p => !TombstackSdkWelcomeServices.IsInstalled(p))
+                .Where(p => TombstackSdkWelcomeServices.CanRecommend(p, RecommendationsOnly))
                 .OrderBy(p => TombstackSdkWelcomeServices.IsComingSoon(p))
-                .ThenByDescending(p => p.discount > 0)
+                .ThenByDescending(p => !RecommendationsOnly && p.discount > 0)
                 .ThenByDescending(p => ReleaseDate(p))
                 .ThenBy(p => p.name)
                 .Take(6).ToList();
@@ -59,7 +60,7 @@ namespace AnkleBreaker.Tombstack.Editor.Welcome
             VisualElement seeAll = Clickable(() => { _filter = "all"; OpenTab("assets"); }, "abw-catalog-next");
             string collection = "assets";
             seeAll.Add(Text("Discover all " + count.ToString(CultureInfo.InvariantCulture) + " " + collection + "  \u2192", "abw-catalog-next__title"));
-            seeAll.Add(Text("Open the full catalogue", "abw-catalog-next__subtitle"));
+            seeAll.Add(Text(RecommendationsOnly ? "View on the Unity Asset Store" : "Open the full catalogue", "abw-catalog-next__subtitle"));
             panel.Add(seeAll);
 
             ScrollView restored = _panelScroll;
@@ -69,9 +70,9 @@ namespace AnkleBreaker.Tombstack.Editor.Welcome
 
         private void BuildFreeProducts(VisualElement panel)
         {
-            List<TombstackSdkProduct> free = _catalog.products.Where(p => p.pinned && !IsSelf(p)).Take(2).ToList();
+            List<TombstackSdkProduct> free = _catalog.products.Where(p => p.pinned && !IsSelf(p) && TombstackSdkWelcomeServices.CanRecommend(p, RecommendationsOnly)).Take(2).ToList();
             if (free.Count == 0) return;
-            panel.Add(Eyebrow("FREE FROM US", null, true));
+            panel.Add(Eyebrow(RecommendationsOnly ? "MORE FROM OUR STUDIO" : "FREE FROM US", null, true));
             foreach (TombstackSdkProduct product in free) panel.Add(Line(product));
         }
 
@@ -90,7 +91,7 @@ namespace AnkleBreaker.Tombstack.Editor.Welcome
             foreach (TombstackSdkPick pick in Showcase.shelf)
             {
                 TombstackSdkProduct product = _catalog.products.FirstOrDefault(p => p.id == pick.id);
-                if (product != null && !IsSelf(product) && !product.pinned && !TombstackSdkWelcomeServices.IsInstalled(product)) shelf.Add((product, pick.pitch));
+                if (TombstackSdkWelcomeServices.CanRecommend(product, RecommendationsOnly) && !IsSelf(product) && !product.pinned && !TombstackSdkWelcomeServices.IsInstalled(product)) shelf.Add((product, pick.pitch));
             }
             return shelf;
         }
@@ -99,7 +100,7 @@ namespace AnkleBreaker.Tombstack.Editor.Welcome
         /// then the ones already installed.</summary>
         private List<(TombstackSdkProduct, string)> FamilyShelf(TombstackSdkFamily family) =>
             _catalog.products
-                .Where(p => p.family == family.id && !IsSelf(p) && !p.pinned && !TombstackSdkWelcomeServices.IsInstalled(p))
+                .Where(p => TombstackSdkWelcomeServices.CanRecommend(p, RecommendationsOnly) && p.family == family.id && !IsSelf(p) && !p.pinned && !TombstackSdkWelcomeServices.IsInstalled(p))
                 .OrderBy(p => TombstackSdkWelcomeServices.IsInstalled(p) ? 2 : TombstackSdkWelcomeServices.IsComingSoon(p) ? 1 : 0)
                 .Select(p => (p, (string)null))
                 .ToList();
@@ -111,7 +112,7 @@ namespace AnkleBreaker.Tombstack.Editor.Welcome
         /// the store, so the card names the others and opens the family: no price, no deduction.</summary>
         private void BuildFamilyCard(VisualElement host, TombstackSdkFamily family)
         {
-            List<TombstackSdkProduct> members = _catalog.products.Where(p => p.family == family.id).ToList();
+            List<TombstackSdkProduct> members = _catalog.products.Where(p => p.family == family.id && TombstackSdkWelcomeServices.CanRecommend(p, RecommendationsOnly)).ToList();
             if (members.Count < 2) return;
             List<TombstackSdkProduct> owned = members.Where(p => IsSelf(p) || TombstackSdkWelcomeServices.IsInstalled(p)).ToList();
             List<TombstackSdkProduct> others = members.Except(owned).ToList();
@@ -144,10 +145,10 @@ namespace AnkleBreaker.Tombstack.Editor.Welcome
             using var perf = new TombstackSdkWelcomePerf.Scope("UI.Card");
             bool installed = TombstackSdkWelcomeServices.IsInstalled(product);
             bool soon = TombstackSdkWelcomeServices.IsComingSoon(product);
-            bool sale = product.discount > 0 && !installed && !soon;
+            bool sale = !RecommendationsOnly && product.discount > 0 && !installed && !soon;
             VisualElement card = Clickable(() => TombstackSdkWelcomeServices.OpenProduct(product, _catalog), "abw-card");
             if (wide) card.AddToClassList("abw-card--wide");
-            if (product.free) card.AddToClassList("abw-card--free");
+            if (!RecommendationsOnly && product.free) card.AddToClassList("abw-card--free");
             if (sale) card.AddToClassList("abw-card--sale");
             if (installed) card.AddToClassList("abw-card--installed");
             card.tooltip = installed ? product.name + " is in this project"
@@ -195,7 +196,7 @@ namespace AnkleBreaker.Tombstack.Editor.Welcome
             nameRow.AddToClassList("abw-card__name-row");
             nameRow.Add(Text(product.name, "abw-card__name"));
             if (soon) nameRow.Add(Pill("COMING SOON", "abw-pill--soon"));
-            else if (product.free && !wide) nameRow.Add(Pill("FREE", null));
+            else if (!RecommendationsOnly && product.free && !wide) nameRow.Add(Pill("FREE", null));
             else if (!string.IsNullOrEmpty(tag)) nameRow.Add(Pill(tag, "abw-pill--quiet"));
             body.Add(nameRow);
             if (wide && !string.IsNullOrEmpty(product.category)) body.Add(Text(product.category, "abw-card__category"));
@@ -231,8 +232,9 @@ namespace AnkleBreaker.Tombstack.Editor.Welcome
         /// <summary>Rating, review count, price, and on a sale the struck pre-sale price. Left out
         /// when the catalogue has not been reached: an unknown figure is not drawn as zero stars,
         /// and the store itself shows no average under three reviews.</summary>
-        private static VisualElement StoreLine(TombstackSdkProduct product)
+        private VisualElement StoreLine(TombstackSdkProduct product)
         {
+            if (RecommendationsOnly) return Text("View on the Unity Asset Store >", "abw-card__link");
             bool rated = product.rating > 0f;
             bool priced = !product.free && !string.IsNullOrEmpty(product.price);
             if (!rated && !priced && !product.free) return null;
@@ -295,7 +297,7 @@ namespace AnkleBreaker.Tombstack.Editor.Welcome
             var heading = new VisualElement();
             heading.AddToClassList("abw-line__heading");
             heading.Add(Text(product.name, "abw-line__name"));
-            heading.Add(Pill("FREE", null));
+            if (!RecommendationsOnly) heading.Add(Pill("FREE", null));
             text.Add(heading);
             AddGameBadges(text, product);
             if (!string.IsNullOrEmpty(product.blurb)) text.Add(Text(product.blurb, "abw-line__pitch"));
@@ -317,7 +319,7 @@ namespace AnkleBreaker.Tombstack.Editor.Welcome
         /// itself. Counting one way and listing the other made the panel say 17 and the tab 18.</param>
         private IEnumerable<TombstackSdkProduct> Filtered(string filter, bool includeSelf = false)
         {
-            IEnumerable<TombstackSdkProduct> all = _catalog.products.Where(p => includeSelf || !IsSelf(p));
+            IEnumerable<TombstackSdkProduct> all = _catalog.products.Where(p => (includeSelf || !IsSelf(p)) && TombstackSdkWelcomeServices.CanRecommend(p, RecommendationsOnly));
             if (string.IsNullOrEmpty(filter) || filter == "all") return all;
             if (filter == "free") return all.Where(p => p.free);
             // A sale on something the buyer already owns is not an offer.
@@ -709,7 +711,7 @@ namespace AnkleBreaker.Tombstack.Editor.Welcome
             foreach (TombstackSdkGameProduct use in game.products)
             {
                 TombstackSdkProduct product = _catalog.products.FirstOrDefault(p => p.id == use.id);
-                if (product == null) continue;
+                if (!TombstackSdkWelcomeServices.CanRecommend(product, RecommendationsOnly)) continue;
                 var link = new Button(() => TombstackSdkWelcomeServices.OpenProduct(product, _catalog)) { tooltip = product.storeName, name = "game-product-" + game.id + "-" + product.id };
                 link.AddToClassList("abw-game-product");
                 var picture = LiveImage(() => TombstackSdkWelcomeServices.Card(_context, product), "abw-game-product__image", path: TombstackSdkWelcomeServices.CachedCardPath(product), fallbackPath: _context.Media("Media/Cards/" + product.card));
