@@ -2,6 +2,16 @@
 
 All notable changes to `com.anklebreaker.tombstack`.
 
+## [0.21.6] - 2026-10-26
+
+### Fixed
+- Events and metrics are no longer stored twice when the game closes before a batch is confirmed and
+  the batch is sent again at the next launch. Each send now carries the device clock of that attempt
+  instead of the time the batch was built, so the server places the resent batch exactly where the
+  first delivery landed and overwrites it, including on a device whose clock runs ahead.
+
+Session budgeting is unchanged: custom events and metrics are capped at 60 rows per session per 30 minutes for non-paying studios once the server has announced the budget; paid plans and studios on a raised ingest capacity are not capped. Crashes, bug reports and heartbeats are never affected.
+
 ## [0.21.5] - 2026-10-09
 
 ### Fixed

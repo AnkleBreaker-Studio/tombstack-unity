@@ -21,6 +21,8 @@ namespace AnkleBreaker.Tombstack
     internal sealed class TombstackBatch
     {
         private const int MAX_BATCH_BYTES = 512 * 1024;
+        // Every envelope starts with exactly this, so its sentAtIso can be found without parsing the items.
+        private const string ENVELOPE_PREFIX = "{\"sentAtIso\":\"";
         private readonly string[] _items;
         private int _head;
         private int _count;
@@ -107,7 +109,7 @@ namespace AnkleBreaker.Tombstack
             {
                 if (_count == 0) return null;
                 var sb = new StringBuilder(64 + _count * 128);
-                sb.Append("{\"sentAtIso\":\"").Append(sentAtIso).Append("\",\"items\":[");
+                sb.Append(ENVELOPE_PREFIX).Append(sentAtIso).Append("\",\"items\":[");
                 int bytes = Encoding.UTF8.GetByteCount(sb.ToString()) + 2;
                 int drained = 0;
                 while (_count > 0)
@@ -127,6 +129,24 @@ namespace AnkleBreaker.Tombstack
                 sb.Append("]}");
                 return sb.ToString();
             }
+        }
+
+        /// <summary>
+        /// The same envelope with its <c>sentAtIso</c> replaced by <paramref name="sentAtIso"/>; a body
+        /// that is not an envelope comes back unchanged. Called on EVERY send attempt, because the server
+        /// reads <c>sentAtIso</c> against its receive time to correct a device clock that runs ahead, and
+        /// that offset is part of each row's sort key. Sending the value stamped at drain time made a
+        /// quit batch replayed from the spool at the next launch look like a slow clock: a device ahead
+        /// had its first delivery stepped back and its replay stored as sent, so the replay became a
+        /// second copy instead of an overwrite. Item timestamps are untouched. Never throws.
+        /// </summary>
+        internal static string RestampEnvelope(string envelope, string sentAtIso)
+        {
+            if (string.IsNullOrEmpty(envelope) || string.IsNullOrEmpty(sentAtIso)) return envelope;
+            if (!envelope.StartsWith(ENVELOPE_PREFIX, StringComparison.Ordinal)) return envelope;
+            int end = envelope.IndexOf('"', ENVELOPE_PREFIX.Length);
+            if (end < 0) return envelope;
+            return string.Concat(ENVELOPE_PREFIX, sentAtIso, envelope.Substring(end));
         }
 
         /// <summary>Drain a snapshot into byte-bounded envelopes; concurrent producers wait for the next flush.</summary>

@@ -91,7 +91,7 @@ namespace AnkleBreaker.Tombstack
         /// <summary>This package's version. MUST equal <c>unity/package.json</c>'s "version" -
         /// tests/unity-client-header.test.ts reads both and fails the suite if they drift, because a
         /// version string that lies is worse than no version string at all.</summary>
-        private const string SDK_VERSION = "0.21.5";
+        private const string SDK_VERSION = "0.21.6";
         private const string CLIENT_HEADER_VALUE = "unity/" + SDK_VERSION;
         // §K1: name of the auto round-trip metric emitted after each successful ingest POST.
         private const string RTT_METRIC_NAME = "tombstack.rtt_ms";
@@ -1152,7 +1152,13 @@ namespace AnkleBreaker.Tombstack
                 // per send, on the main thread.) Kept on the main thread deliberately: the quit/pause
                 // paths rely on send() issuing the request before its first yield, which a thread-pool
                 // hop would break.
-                var bodyBytes = Encoding.UTF8.GetBytes(item.Body);
+                // A batch envelope carries the device clock of THIS attempt, not of its drain: retries and
+                // spool replays re-send a stored body, and a stale sentAtIso moves the batch's rows on the
+                // server (TombstackBatch.RestampEnvelope). item.Body and the spool file stay as drained.
+                var body = isIngestPath(item.Path)
+                    ? TombstackBatch.RestampEnvelope(item.Body, TombstackTime.NowIso())
+                    : item.Body;
+                var bodyBytes = Encoding.UTF8.GetBytes(body);
                 var req = new UnityWebRequest(_endpoint + item.Path, UnityWebRequest.kHttpVerbPOST);
                 req.uploadHandler = new UploadHandlerRaw(bodyBytes);
                 req.downloadHandler = new DownloadHandlerBuffer();
