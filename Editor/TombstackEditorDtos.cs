@@ -16,12 +16,15 @@ namespace AnkleBreaker.Tombstack.Editor
         public long Status { get; }
         /// <summary>Human-readable error when <see cref="Ok"/> is false; null otherwise.</summary>
         public string Error { get; }
+        /// <summary>Machine-readable failure code from the server envelope; null when absent.</summary>
+        public string ErrorCode { get; }
         /// <summary>Parsed payload when <see cref="Ok"/> is true; default otherwise.</summary>
         public T Data { get; }
 
-        private ApiResult(bool ok, long status, string error, T data)
+        private ApiResult(bool ok, long status, string error, T data, string errorCode = null)
         {
             Ok = ok;
+            ErrorCode = errorCode;
             Status = status;
             Error = error;
             Data = data;
@@ -32,8 +35,9 @@ namespace AnkleBreaker.Tombstack.Editor
             => new ApiResult<T>(true, status, null, data);
 
         /// <summary>Create a failed result with a user-facing message.</summary>
-        public static ApiResult<T> Failure(long status, string error)
-            => new ApiResult<T>(false, status, string.IsNullOrEmpty(error) ? "Unknown error." : error, default);
+        public static ApiResult<T> Failure(long status, string error, string errorCode = null)
+            => new ApiResult<T>(false, status, string.IsNullOrEmpty(error) ? "Unknown error." : error, default,
+                string.IsNullOrEmpty(errorCode) ? null : errorCode);
     }
 
     /// <summary>Payload of <c>POST /api/editor/auth/login</c>.</summary>
@@ -191,5 +195,6 @@ namespace AnkleBreaker.Tombstack.Editor
     {
         public bool success;
         public string error;
+        public string code;
     }
 }

@@ -14,10 +14,14 @@ namespace AnkleBreaker.Tombstack.Editor
     {
         private const string UXML_FILE = "TombstackSignIn.uxml";
         private const float WINDOW_WIDTH = 420f;
-        private const float WINDOW_HEIGHT = 380f;
+        private const float WINDOW_HEIGHT = 440f;
+        private const string CODE_PROMPT = "Enter the code from your authenticator app.";
+        private const string ERROR_CODE_REQUIRED = "two_factor_required";
+        private const string ERROR_CODE_INVALID = "invalid_two_factor_code";
 
         private TextField _emailField;
         private TextField _passwordField;
+        private TextField _codeField;
         private Button _submitButton;
         private Label _errorLabel;
         private Label _loadingLabel;
@@ -39,6 +43,7 @@ namespace AnkleBreaker.Tombstack.Editor
 
             _emailField = rootVisualElement.Q<TextField>("signin-email");
             _passwordField = rootVisualElement.Q<TextField>("signin-password");
+            _codeField = rootVisualElement.Q<TextField>("signin-code");
             _submitButton = rootVisualElement.Q<Button>("signin-submit");
             _errorLabel = rootVisualElement.Q<Label>("signin-error");
             _loadingLabel = rootVisualElement.Q<Label>("signin-loading");
@@ -47,6 +52,7 @@ namespace AnkleBreaker.Tombstack.Editor
             _submitButton?.RegisterCallback<ClickEvent>(onSubmitClicked);
             _signupLink?.RegisterCallback<ClickEvent>(onSignupClicked);
             _passwordField?.RegisterCallback<KeyDownEvent>(onPasswordKeyDown);
+            _codeField?.RegisterCallback<KeyDownEvent>(onPasswordKeyDown);
         }
 
         private void OnDisable()
@@ -54,6 +60,7 @@ namespace AnkleBreaker.Tombstack.Editor
             _submitButton?.UnregisterCallback<ClickEvent>(onSubmitClicked);
             _signupLink?.UnregisterCallback<ClickEvent>(onSignupClicked);
             _passwordField?.UnregisterCallback<KeyDownEvent>(onPasswordKeyDown);
+            _codeField?.UnregisterCallback<KeyDownEvent>(onPasswordKeyDown);
         }
 
         private void onPasswordKeyDown(KeyDownEvent evt)
@@ -82,11 +89,15 @@ namespace AnkleBreaker.Tombstack.Editor
             showError(null);
             try
             {
-                var result = await TombstackSession.SignInAsync(email, password);
+                var result = await TombstackSession.SignInAsync(email, password, readCode());
                 if (this == null) return; // window closed while awaiting
                 if (!result.Ok)
                 {
-                    showError(result.Error);
+                    // Keep email and password; reveal the code field and let the user resubmit with it.
+                    if (result.ErrorCode == ERROR_CODE_REQUIRED || result.ErrorCode == ERROR_CODE_INVALID)
+                        showCodeField();
+                    // Local sentence for "code needed"; older packages still show the server's text.
+                    showError(result.ErrorCode == ERROR_CODE_REQUIRED ? CODE_PROMPT : result.Error);
                     return;
                 }
                 TombstackHubWindow.Open();
@@ -101,6 +112,24 @@ namespace AnkleBreaker.Tombstack.Editor
             {
                 if (this != null) setBusy(false);
             }
+        }
+
+        /// <summary>Typed code with every whitespace character removed ("123 456" becomes "123456").</summary>
+        private string readCode()
+        {
+            var raw = _codeField?.value;
+            if (string.IsNullOrEmpty(raw)) return null;
+            var sb = new System.Text.StringBuilder(raw.Length);
+            foreach (var c in raw)
+                if (!char.IsWhiteSpace(c)) sb.Append(c);
+            return sb.Length == 0 ? null : sb.ToString();
+        }
+
+        private void showCodeField()
+        {
+            if (_codeField == null) return;
+            _codeField.EnableInClassList("hidden", false);
+            _codeField.Focus();
         }
 
         private void setBusy(bool busy)

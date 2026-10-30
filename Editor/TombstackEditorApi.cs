@@ -31,12 +31,13 @@ namespace AnkleBreaker.Tombstack.Editor
         /// </summary>
         /// <param name="email">Account email.</param>
         /// <param name="password">Account password (sent over HTTPS, never stored).</param>
-        public static async Task<ApiResult<EditorLoginData>> LoginAsync(string email, string password)
+        /// <param name="code">Two-factor code (authenticator or recovery code); null or empty when not asked for.</param>
+        public static async Task<ApiResult<EditorLoginData>> LoginAsync(string email, string password, string code = null)
         {
-            var body = buildLoginBody(email, password);
+            var body = buildLoginBody(email, password, code);
             var raw = await sendAsync(UnityWebRequest.kHttpVerbPOST, LOGIN_PATH, body, null);
             if (!raw.IsHttpSuccess)
-                return ApiResult<EditorLoginData>.Failure(raw.Status, describeAuthFailure(raw));
+                return ApiResult<EditorLoginData>.Failure(raw.Status, describeAuthFailure(raw), errorCodeOf(raw));
             var envelope = parse<LoginEnvelope>(raw.Body);
             if (envelope?.data == null || string.IsNullOrEmpty(envelope.data.editorToken))
                 return ApiResult<EditorLoginData>.Failure(raw.Status, "Malformed server response.");
@@ -105,13 +106,15 @@ namespace AnkleBreaker.Tombstack.Editor
         }
 
         /// <summary>Login body via the runtime JSON writer (escaping handled, no reflection).</summary>
-        private static string buildLoginBody(string email, string password)
+        private static string buildLoginBody(string email, string password, string code)
         {
             var sb = new StringBuilder(LOGIN_BODY_CAPACITY);
             sb.Append('{');
             bool first = true;
             TombstackJson.AppendField(sb, "email", email ?? string.Empty, ref first);
             TombstackJson.AppendField(sb, "password", password ?? string.Empty, ref first);
+            if (!string.IsNullOrEmpty(code))
+                TombstackJson.AppendField(sb, "code", code, ref first);
             sb.Append(",\"editorInfo\":{");
             bool firstInfo = true;
             TombstackJson.AppendField(sb, "unityVersion", Application.unityVersion, ref firstInfo);
@@ -184,6 +187,14 @@ namespace AnkleBreaker.Tombstack.Editor
             if (raw.Status == HTTP_UNAUTHORIZED) return "Session expired — sign in again.";
             if (raw.Status == HTTP_TOO_MANY_REQUESTS) return "Rate limited — slow down and retry.";
             return serverErrorOrDefault(raw, $"Request failed (HTTP {raw.Status}).");
+        }
+
+        /// <summary>The envelope's machine-readable <c>code</c> (e.g. two_factor_required), or null.</summary>
+        private static string errorCodeOf(RawResponse raw)
+        {
+            if (raw.TransportFailed) return null;
+            var envelope = parse<BareEnvelope>(raw.Body);
+            return string.IsNullOrEmpty(envelope?.code) ? null : envelope.code;
         }
 
         /// <summary>Prefer the server's envelope error message when one is present.</summary>

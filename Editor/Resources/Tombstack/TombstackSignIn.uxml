@@ -11,6 +11,7 @@
 
             <ui:TextField name="signin-email" label="EMAIL" />
             <ui:TextField name="signin-password" label="PASSWORD" password="true" />
+            <ui:TextField name="signin-code" label="TWO-FACTOR CODE" class="hidden" />
 
             <ui:Button name="signin-submit" text="SIGN IN" class="tmb-btn tmb-btn--gold" style="margin-top: 14px;" />
             <ui:Label name="signin-loading" text="CONNECTING…" class="tmb-loading hidden" style="margin-top: 8px; -unity-text-align: middle-center;" />

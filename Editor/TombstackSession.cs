@@ -44,10 +44,11 @@ namespace AnkleBreaker.Tombstack.Editor
         /// </summary>
         /// <param name="email">Account email.</param>
         /// <param name="password">Account password (forwarded once, never stored).</param>
-        /// <returns>The API result — inspect <c>Error</c> for the UI on failure.</returns>
-        public static async Task<ApiResult<EditorLoginData>> SignInAsync(string email, string password)
+        /// <param name="code">Two-factor code when the account has two-factor on; null otherwise.</param>
+        /// <returns>The API result — inspect <c>Error</c> and <c>ErrorCode</c> for the UI on failure.</returns>
+        public static async Task<ApiResult<EditorLoginData>> SignInAsync(string email, string password, string code = null)
         {
-            var result = await TombstackEditorApi.LoginAsync(email, password);
+            var result = await TombstackEditorApi.LoginAsync(email, password, code);
             if (result.Ok)
             {
                 EditorPrefs.SetString(PREFS_TOKEN, result.Data.editorToken);

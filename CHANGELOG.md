@@ -2,6 +2,16 @@
 
 All notable changes to `com.anklebreaker.tombstack`.
 
+## [0.21.7] - 2026-10-30
+
+### Added
+- Sign-in window asks for a two-factor code when the account has two-factor on. The code field
+  appears after the first attempt, keeps the email and password, and takes an authenticator code or
+  a recovery code. Spaces in the typed code are ignored. The window says "Enter the code from your authenticator app."
+  and is taller so the code field is never cut off.
+
+Session budgeting is unchanged: custom events and metrics are capped at 60 rows per session per 30 minutes for non-paying studios once the server has announced the budget; paid plans and studios on a raised ingest capacity are not capped. Crashes, bug reports and heartbeats are never affected.
+
 ## [0.21.6] - 2026-10-26
 
 ### Fixed
