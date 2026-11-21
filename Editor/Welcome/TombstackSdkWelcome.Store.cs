@@ -504,7 +504,7 @@ namespace AnkleBreaker.Tombstack.Editor.Welcome
             host.Add(Text("Explore our games and the packages we use to build them.", "abw-studio__body"));
             var games = new VisualElement();
             games.AddToClassList("abw-games");
-            foreach (TombstackSdkGame game in visible.OrderBy(game => game.id == "mithrall" ? 0 : game.id == "kickdom" ? 1 : 2))
+            foreach (TombstackSdkGame game in visible.OrderBy(game => game.id == "mithrall" ? 0 : 1))
                 if (_pageBuildQueue != null) _pageBuildQueue.Enqueue(() => games.Add(GameCard(game)));
                 else games.Add(GameCard(game));
             host.Add(games);

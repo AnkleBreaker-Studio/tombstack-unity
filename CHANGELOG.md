@@ -2,6 +2,15 @@
 
 All notable changes to `com.anklebreaker.tombstack`.
 
+## [0.21.8] - 2026-11-21
+
+### Changed
+- The Welcome window's embedded catalogue lists Mithrall as the only game. One game card, its cover
+  and its logo were removed; the games page and the CLICKME studio tile now open on Mithrall, also
+  offline.
+
+No runtime behaviour change. Session budgeting is unchanged: custom events and metrics are capped at 60 rows per session per 30 minutes for non-paying studios once the server has announced the budget; paid plans and studios on a raised ingest capacity are not capped. Crashes, bug reports and heartbeats are never affected.
+
 ## [0.21.7] - 2026-10-30
 
 ### Added
@@ -136,7 +145,7 @@ apart), and another shows what is new in the AnkleBreaker catalogue when somethi
 AnkleBreaker package on the machine shares one slot, at most one such window every 14 days, never at
 launch, in Play mode or while compiling. Nothing opens a web page by itself.
 The Studio tab takes the order and visibility of its blocks from the online catalogue, and presents
-Nodary next to Mithrall and Kickdom.
+Nodary next to Mithrall.
 
 ### Unchanged — the session budget
 

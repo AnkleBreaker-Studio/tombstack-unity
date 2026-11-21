@@ -46,43 +46,6 @@
   ],
   "games": [
     {
-      "id": "kickdom",
-      "name": "Kickdom",
-      "tagline": "REAL-TIME PVP FOOTBALL",
-      "summary": "Build your team. Turn the match around with game-changing items.",
-      "cover": "kickdom-hero.jpg",
-      "logo": "kickdom-logo.png",
-      "websiteUrl": "https://www.kickdom.gg/",
-      "steamUrl": "",
-      "steamLabel": "",
-      "products": [
-        {
-          "id": "Changeling",
-          "role": "game"
-        },
-        {
-          "id": "TweenInInspector",
-          "role": "game"
-        },
-        {
-          "id": "ManagersLoader",
-          "role": "game"
-        },
-        {
-          "id": "ManagersLoaderFishNet",
-          "role": "game"
-        },
-        {
-          "id": "Tombstack",
-          "role": "development"
-        },
-        {
-          "id": "MCPForUnity",
-          "role": "development"
-        }
-      ]
-    },
-    {
       "id": "mithrall",
       "name": "Mithrall",
       "tagline": "SANDBOX SURVIVAL & CONQUEST",
