@@ -36,6 +36,11 @@ namespace AnkleBreaker.Tombstack.Editor
         private bool _fetching;
         private bool _updateHooked;
         private double _nextRefreshAt;
+        // The server, sign-in and game the figures on screen were fetched for: when any of them changes,
+        // the figures are cleared. Memory only.
+        private string _shownOrigin;
+        private string _shownToken;
+        private string _shownGameId;
 
         /// <summary>Query the dashboard elements out of the already-built hub tree.</summary>
         /// <param name="root">The hub window root containing the <c>dash-*</c> elements.</param>
@@ -90,6 +95,8 @@ namespace AnkleBreaker.Tombstack.Editor
                 _gameNameLabel.text = settings.IsLinked ? settings.GameName.ToUpperInvariant() : "NO LINKED GAME";
             _refreshButton?.SetEnabled(settings.IsLinked);
             if (!settings.IsLinked) showStatus("Link this project on the Connection tab to see live data.");
+            // Figures of an earlier server, sign-in or game do not stay on screen.
+            if (_shownToken != null && !isCurrent(_shownOrigin, _shownToken, _shownGameId)) clearFigures();
         }
 
         private void onRefreshClicked(ClickEvent evt) => refresh();
@@ -130,19 +137,40 @@ namespace AnkleBreaker.Tombstack.Editor
             if (!settings.IsLinked || !TombstackSession.IsSignedIn) return;
 
             _fetching = true;
+            bool stale = false;
             showStatus("FETCHING…");
             try
             {
-                var result = await TombstackEditorApi.GetSummaryAsync(
-                    TombstackSession.EditorToken, settings.GameId, TREND_DAYS);
-                if (!result.Ok)
+                // What this request belongs to: the server, the sign-in and the linked game can change meanwhile.
+                var origin = TombstackSession.ServerOrigin;
+                var token = TombstackSession.EditorToken;
+                var gameId = settings.GameId;
+                var result = await TombstackEditorApi.GetSummaryAsync(token, gameId, TREND_DAYS);
+                bool current = isCurrent(origin, token, gameId);
+                if (!result.Ok && result.Status == 401) TombstackSession.HandleUnauthorized(origin, token);
+                // Figures of a session that is no longer current go whatever this answer is: after a change
+                // made by another Unity process (which raises no event here) nothing else clears them.
+                if (_shownToken != null && !isCurrent(_shownOrigin, _shownToken, _shownGameId)) clearFigures();
+                if (!current)
                 {
-                    if (result.Status == 401) TombstackSession.HandleUnauthorized();
-                    showStatus(result.Error);
-                    return;
+                    // An answer for an earlier server, sign-in or game is not shown; the current one is
+                    // fetched below instead. SyncLinkState restores the link hint after an unlink meanwhile.
+                    stale = true;
+                    showStatus(null);
+                    SyncLinkState();
                 }
-                showStatus(null);
-                render(result.Data);
+                else if (!result.Ok)
+                {
+                    showStatus(result.Error);
+                }
+                else
+                {
+                    showStatus(null);
+                    render(result.Data);
+                    _shownOrigin = origin;
+                    _shownToken = token;
+                    _shownGameId = gameId;
+                }
             }
             catch (Exception e)
             {
@@ -153,6 +181,39 @@ namespace AnkleBreaker.Tombstack.Editor
             {
                 _fetching = false;
             }
+            // Returns at once when the project is no longer linked or nobody is signed in.
+            if (stale) refresh();
+        }
+
+        /// <summary>True while <paramref name="origin"/>, <paramref name="token"/> and
+        /// <paramref name="gameId"/> are still this project's server, its sign-in and its linked game.</summary>
+        private static bool isCurrent(string origin, string token, string gameId)
+        {
+            var settings = TombstackProjectSettingsSO.instance;
+            return token != null
+                && TombstackSession.IsCurrent(origin, token)
+                && settings.IsLinked
+                && string.Equals(settings.GameId, gameId, StringComparison.Ordinal);
+        }
+
+        /// <summary>Back to the empty state the tab opens with: no figures, no trend, no signatures.</summary>
+        private void clearFigures()
+        {
+            _shownOrigin = null;
+            _shownToken = null;
+            _shownGameId = null;
+            if (_crashFreeLabel != null)
+            {
+                _crashFreeLabel.text = "—";
+                _crashFreeLabel.EnableInClassList("tmb-stat__value--good", false);
+                _crashFreeLabel.EnableInClassList("tmb-stat__value--bad", false);
+            }
+            if (_crashes24hLabel != null) _crashes24hLabel.text = "—";
+            if (_crashes7dLabel != null) _crashes7dLabel.text = "—";
+            _spikeBanner?.EnableInClassList("hidden", true);
+            _trendContainer?.Clear();
+            _signaturesContainer?.Clear();
+            _signaturesEmptyLabel?.EnableInClassList("hidden", true);
         }
 
         private void render(EditorGameSummaryData summary)

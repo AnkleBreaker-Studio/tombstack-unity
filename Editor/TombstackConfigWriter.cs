@@ -1,3 +1,5 @@
+using System;
+using System.Collections.Generic;
 using UnityEditor;
 using UnityEngine;
 
@@ -6,15 +8,22 @@ namespace AnkleBreaker.Tombstack.Editor
     /// <summary>
     /// Bridges the editor plugin to the runtime config the SDK boots from. The runtime loads
     /// <c>Resources/TombstackConfig</c> (<see cref="TombstackConfigSO"/>) at startup; this
-    /// writer finds (or creates at <c>Assets/Tombstack/Resources/TombstackConfig.asset</c>)
-    /// that asset and writes the minted SDK token + endpoint through SerializedObject —
+    /// writer finds exactly that asset (or creates it at <c>Assets/Tombstack/Resources/TombstackConfig.asset</c>
+    /// when there is none) and writes the minted SDK token + endpoint through SerializedObject —
     /// the runtime class stays untouched. The tmb_ token is game-facing by design and is the
     /// ONLY credential that ever lands inside the project.
+    ///
+    /// It used to take the first <c>TombstackConfigSO</c> anywhere, packages included, in an unspecified
+    /// order: with a second config in the project, the token could land in an asset the game never loads.
+    /// Several candidates, or one inside a read-only package, now stop the write
+    /// (<see cref="DescribeConfigProblem"/>).
     /// </summary>
     public static class TombstackConfigWriter
     {
         private const string CONFIG_FOLDER = "Assets/Tombstack/Resources";
-        private const string CONFIG_ASSET_PATH = CONFIG_FOLDER + "/TombstackConfig.asset";
+        // The name the runtime loads: Resources.Load<TombstackConfigSO>("TombstackConfig") in Tombstack.autoInit.
+        private const string RUNTIME_CONFIG_NAME = "TombstackConfig";
+        private const string CONFIG_ASSET_PATH = CONFIG_FOLDER + "/" + RUNTIME_CONFIG_NAME + ".asset";
         private const string PROP_ENDPOINT = "_endpoint";
         private const string PROP_GAME_TOKEN = "_gameToken";
         private const string PROP_HEARTBEAT = "_heartbeatIntervalSeconds";
@@ -29,20 +38,41 @@ namespace AnkleBreaker.Tombstack.Editor
         // one value, so it is defined once, beside the field it initialises.
         private const string TOKEN_PLACEHOLDER = TombstackConfigSO.TOKEN_PLACEHOLDER;
 
-        /// <summary>Find the project's config asset anywhere under Assets (null when absent).</summary>
+        /// <summary>
+        /// The config asset the runtime loads at startup, or null when there is none, when several could be
+        /// loaded (which one wins is unspecified), or when it sits in a read-only package
+        /// (<see cref="DescribeConfigProblem"/> says which).
+        /// </summary>
         public static TombstackConfigSO FindConfig()
         {
-            var guids = AssetDatabase.FindAssets("t:TombstackConfigSO");
-            if (guids == null || guids.Length == 0) return null;
-            var path = AssetDatabase.GUIDToAssetPath(guids[0]);
-            return AssetDatabase.LoadAssetAtPath<TombstackConfigSO>(path);
+            var paths = runtimeConfigPaths();
+            if (paths.Count != 1) return null;
+            var path = paths[0];
+            return isWritablePath(path) ? AssetDatabase.LoadAssetAtPath<TombstackConfigSO>(path) : null;
         }
 
-        /// <summary>Find the config asset, creating it under a Resources folder when missing.</summary>
+        /// <summary>Why the plugin cannot write the config the game loads, or null when it can (none yet
+        /// counts as fine: linking creates it).</summary>
+        public static string DescribeConfigProblem()
+        {
+            var paths = runtimeConfigPaths();
+            if (paths.Count > 1)
+                return "Several TombstackConfig assets sit in Resources folders and the game loads only one of them: "
+                       + string.Join(", ", paths) + ". Keep one, then link again.";
+            if (paths.Count == 1 && !isWritablePath(paths[0]))
+                return "The TombstackConfig the game loads is inside a package and cannot be written: " + paths[0]
+                       + ". Move it to a Resources folder under Assets, then link again.";
+            return null;
+        }
+
+        /// <summary>Find the config asset, creating it under a Resources folder when there is none. Null
+        /// when the existing one cannot be used (see <see cref="DescribeConfigProblem"/>): a second asset
+        /// beside it would not change what the game loads.</summary>
         public static TombstackConfigSO FindOrCreateConfig()
         {
             var existing = FindConfig();
             if (existing != null) return existing;
+            if (runtimeConfigPaths().Count > 0) return null;
 
             if (!AssetDatabase.IsValidFolder("Assets/Tombstack"))
                 AssetDatabase.CreateFolder("Assets", "Tombstack");
@@ -55,7 +85,8 @@ namespace AnkleBreaker.Tombstack.Editor
             return config;
         }
 
-        /// <summary>True when the config holds a real-looking SDK token (not the placeholder).</summary>
+        /// <summary>True when the config holds a real-looking SDK token: not the placeholder, and not
+        /// another Tombstack credential (studio key, editor token, MCP key) that also starts with tmb_.</summary>
         public static bool HasSdkToken()
         {
             var config = FindConfig();
@@ -63,7 +94,30 @@ namespace AnkleBreaker.Tombstack.Editor
             var token = config.GameToken;
             return !string.IsNullOrEmpty(token)
                 && token != TOKEN_PLACEHOLDER
-                && token.StartsWith(TOKEN_PREFIX, System.StringComparison.Ordinal);
+                && token.StartsWith(TOKEN_PREFIX, System.StringComparison.Ordinal)
+                && TombstackConfigSO.DescribeNonSdkCredential(token) == null;
+        }
+
+        /// <summary>One line for the Hub: the SDK token is present, missing, or the wrong credential.</summary>
+        public static string DescribeTokenState()
+        {
+            var config = FindConfig();
+            var wrongKind = TombstackConfigSO.DescribeNonSdkCredential(config != null ? config.GameToken : null);
+            if (wrongKind != null) return "Not an SDK token (" + wrongKind + "): link again";
+            return HasSdkToken() ? "Present (tmb_…)" : "Missing";
+        }
+
+        /// <summary>Every config asset a build can load at startup (a TombstackConfig in any Resources
+        /// folder, packages included), for the build guard. Never null.</summary>
+        public static List<TombstackConfigSO> FindShippedConfigs()
+        {
+            var configs = new List<TombstackConfigSO>();
+            foreach (var path in runtimeConfigPaths())
+            {
+                var config = AssetDatabase.LoadAssetAtPath<TombstackConfigSO>(path);
+                if (config != null) configs.Add(config);
+            }
+            return configs;
         }
 
         /// <summary>Write endpoint + minted SDK token into the config asset (created if missing).</summary>
@@ -75,7 +129,11 @@ namespace AnkleBreaker.Tombstack.Editor
             try
             {
                 var config = FindOrCreateConfig();
-                if (config == null) return false;
+                if (config == null)
+                {
+                    Debug.LogWarning("[Tombstack] Could not write config asset: " + (DescribeConfigProblem() ?? "it could not be created."));
+                    return false;
+                }
                 var so = new SerializedObject(config);
                 so.FindProperty(PROP_ENDPOINT).stringValue = endpoint;
                 so.FindProperty(PROP_GAME_TOKEN).stringValue = sdkToken;
@@ -149,7 +207,12 @@ namespace AnkleBreaker.Tombstack.Editor
             try
             {
                 var config = FindConfig();
-                if (config == null) return;
+                if (config == null)
+                {
+                    var problem = DescribeConfigProblem();
+                    if (problem != null) Debug.LogWarning("[Tombstack] Config asset not updated: " + problem);
+                    return;
+                }
                 var so = new SerializedObject(config);
                 mutate(so);
                 so.ApplyModifiedPropertiesWithoutUndo();
@@ -160,6 +223,42 @@ namespace AnkleBreaker.Tombstack.Editor
                 Debug.LogWarning($"[Tombstack] Could not update config asset: {e.Message}");
             }
         }
+
+        /// <summary>Every asset <c>Resources.Load&lt;TombstackConfigSO&gt;("TombstackConfig")</c> can return,
+        /// sorted (stable messages).</summary>
+        private static List<string> runtimeConfigPaths()
+        {
+            var paths = new List<string>();
+            var guids = AssetDatabase.FindAssets("t:TombstackConfigSO");
+            if (guids == null) return paths;
+            foreach (var guid in guids)
+            {
+                var path = AssetDatabase.GUIDToAssetPath(guid);
+                if (isRuntimeConfigPath(path) && !paths.Contains(path)) paths.Add(path);
+            }
+            paths.Sort(StringComparer.Ordinal);
+            return paths;
+        }
+
+        /// <summary>True for an asset the runtime's Resources.Load can return: named
+        /// <see cref="RUNTIME_CONFIG_NAME"/>, directly inside a folder named Resources (in Assets or in a
+        /// package). A config anywhere else is never loaded by the game.</summary>
+        private static bool isRuntimeConfigPath(string path)
+        {
+            if (string.IsNullOrEmpty(path)) return false;
+            var normalized = path.Replace('\\', '/');
+            int slash = normalized.LastIndexOf('/');
+            if (slash <= 0) return false;
+            var folder = normalized.Substring(0, slash);
+            var name = System.IO.Path.GetFileNameWithoutExtension(normalized);
+            return string.Equals(name, RUNTIME_CONFIG_NAME, StringComparison.Ordinal)
+                   && (folder == "Resources" || folder.EndsWith("/Resources", StringComparison.Ordinal));
+        }
+
+        /// <summary>Only assets under Assets/ can be written; a package's are read-only (immutable, or
+        /// replaced on the next update).</summary>
+        private static bool isWritablePath(string path) =>
+            !string.IsNullOrEmpty(path) && path.Replace('\\', '/').StartsWith("Assets/", StringComparison.Ordinal);
 
         private static void saveAsset(TombstackConfigSO config)
         {

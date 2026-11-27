@@ -20,7 +20,7 @@ cases with **zero further integration**:
 | Unobserved `Task` exceptions | ✅ Automatic | `TaskScheduler.UnobservedTaskException` (observed + reported, never escalated) |
 | AppDomain unhandled exceptions | ✅ Automatic | `AppDomain.CurrentDomain.UnhandledException` (write-ahead persisted before the process dies) |
 | Errors / warnings / logs as breadcrumbs | ✅ Automatic | Every Unity log line → 50-entry ring, attached to crashes & bug reports |
-| Player log upload on crash | ✅ Automatic | Rolling ~512 KB `session.log`, PUT to a presigned URL after the crash report's 2xx |
+| Player log upload on crash | ✅ Automatic | Rolling ~512 KB `session.log`, PUT to a presigned URL after the crash report's 2xx. A non-fatal exception report carries it at most once every 10 minutes; fatal crashes and bug reports always do |
 | Screenshot attachment | ✅ Automatic (bug reports; opt-in on exceptions) | End-of-frame capture, downscaled (config cap, default 1280 px), uploaded via the presigned `screenshotUpload` after the report's 2xx — ON by default for bug reports; exception screenshots are opt-in + throttled |
 | Unclean shutdown (hard crash / OOM kill / force quit) | ✅ Automatic (next launch) | `session.lock` marker + a retained past session log, reported as signature `unclean-shutdown` |
 | Real OS exit reason on unclean shutdown (0.17+, Android 11+) | ✅ Automatic | The session marker persists the process id; at next launch the SDK asks Android `ApplicationExitInfo` what killed that exact process and enriches the synthetic report with a real cause (`oom-kill` / `anr-kill` / `native-signal-<n>` / `native-crash` / …) plus wire fields `crashType` / `osExitReason` / `osSignal` / `rssAtDeathBytes`. User force-stop / self-exit / permission-change deaths are no longer reported at all. Fail-soft: pre-Android-11, non-Android, or any lookup failure keeps the pre-0.17 heuristic |
@@ -49,6 +49,7 @@ Every autonomy system has its own toggle on the config asset — all default ON:
 | `Retain Launch Logs` (0.18+) | How many recent per-launch logs to keep on disk, keyed by session id (default **3**, clamped 1–10). Enables server log pulls to reach a specific PAST session — even a player who has since disconnected. Also settable via `Tombstack.Init(..., retainedLaunchLogs)` |
 | `Detect Unclean Shutdown` | The session-marker dirty-session detection on next launch |
 | `Auto Scene Breadcrumbs` | Automatic breadcrumbs on scene load / active-scene change |
+| `Auto Rtt Metric` | A `tombstack.rtt_ms` metric: the mean round-trip time of the SDK's uploads, at most one row every 15 minutes. Each row is stored and billed as a metric row; it does not use the per-session allowance for your own events and metrics |
 | `Send Heartbeats` (0.12+) | The heartbeat loop — **OFF logs a warning: live CCU, sessions, crash-free %, fleet, user metadata, and log pulls go dark** |
 | `Collect Frame Stats` (0.12+) | The per-heartbeat frame-stats sampler (`fpsAvg` / `slowFramePct` / `hitchCount` / `worstFrameMs`) |
 | `Detect App Hangs` + `App Hang Threshold Seconds` | The app-hang watchdog (default 5s, min 2s, 0 disables) |
@@ -57,23 +58,28 @@ Every autonomy system has its own toggle on the config asset — all default ON:
 At runtime, `Tombstack.SetCaptureEnabled(TombstackCapture.X, bool)` (0.12+) flips
 `Exceptions` / `Heartbeats` / `Breadcrumbs` / `FrameStats` / `AppHangs` live. Everything is
 additionally consent-gated: with *Require Consent* enabled, nothing is captured, mirrored, or
-reported until `Tombstack.SetConsent(true)`.
+reported until `Tombstack.SetConsent(true)`. Revoking (`SetConsent(false)` after a grant) also
+deletes what the SDK kept on the device from the consented period: the upload queue, the session
+logs (current and retained) and the session marker.
 
 ## Install
 
 **Via UPM git URL** (public mirror) — Window ▸ Package Manager ▸ `+` ▸ *Add package from git URL…*:
 
 ```
-https://github.com/AnkleBreaker-Studio/tombstack-unity.git#v0.21.8
+https://github.com/AnkleBreaker-Studio/tombstack-unity.git#v0.21.9
 ```
 
 Or add to `Packages/manifest.json`:
 
 ```jsonc
-{ "dependencies": { "com.anklebreaker.tombstack": "https://github.com/AnkleBreaker-Studio/tombstack-unity.git#v0.21.8" } }
+{ "dependencies": { "com.anklebreaker.tombstack": "https://github.com/AnkleBreaker-Studio/tombstack-unity.git#v0.21.9" } }
 ```
 
 Or copy `unity/` into your project's `Packages/`. Requires Unity **6 (6000.0)+** (Mono and IL2CPP).
+
+**WebGL:** use one SDK per build — this package *or* the Tombstack Web SDK around the page, not
+both. Each starts its own session, so every player would be counted twice.
 
 ## Editor plugin & account sign-in
 
@@ -82,20 +88,26 @@ The package ships an editor plugin (UI Toolkit, forge-dark themed like the web d
 gentle one-time prompt points you to the Hub.
 
 1. **Sign in** — `Window ▸ Tombstack ▸ Sign In` (or the Hub's sign-in button). Credentials
-   are exchanged for an editor token stored **per-user in EditorPrefs** — it never enters
-   the project folder or version control. No account? The window links to the signup page.
+   are exchanged for an editor token stored **per-user and per server in EditorPrefs** — it never
+   enters the project folder or version control, and it is only ever sent back to the server that
+   issued it. The window shows which server you sign in to. No account? The window links to the
+   signup page.
 2. **Link the project** — `Window ▸ Tombstack ▸ Hub` → pick your studio + game (loaded from
    your account) → **Link this project**. This mints a per-game `tmb_` SDK token and writes
    endpoint + token into the `TombstackConfig` asset (created at
    `Assets/Tombstack/Resources/TombstackConfig.asset` if missing) — the same asset the
-   runtime auto-init reads. The game binding is saved to
+   runtime auto-init reads. If several `TombstackConfig` assets sit in `Resources` folders, or
+   the one the game loads is inside a package, linking stops and names them before minting a
+   token. The game binding is saved to
    `ProjectSettings/TombstackSettings.asset` (safe to commit; it contains ids, not secrets).
 3. **Watch the dashboard** — the Hub's *Dashboard* tab shows live crash-free %, 24h/7d crash
    counts, a spike banner, the top-10 signatures (click → opens the signature in the web
    dashboard), and a 30-day trend. Refresh manually or enable 60s auto-refresh.
 4. **Project Settings** — `Edit ▸ Project Settings ▸ Tombstack`: endpoint URL override
-   (self-hosted/staging), heartbeat interval and consent defaults (written into the config
-   asset), unlink, and sign out.
+   (e.g. a staging server; `https` only, `http` only for localhost), heartbeat interval and
+   consent defaults (written into the config asset), unlink, and sign out. The override is stored
+   in the project, so your sign-in goes to a server other than `https://tombstack.com` only after
+   you confirm that server on your computer; until then the plugin sends it nothing.
 
 ## Quick start
 
@@ -205,9 +217,14 @@ try { Load(); } catch (Exception e) { Tombstack.ReportException(e); }
   request a player's session log when something looks wrong, without the player filing a bug report.
   - **Server side** → `Tombstack.RequestPlayerLogs(target, value, reason)` (or the
     `RequestPlayerLogs(target, reason)` / `OnAnomalousDisconnect(userId, reason)` convenience forms)
-    POSTs `{ targetType, targetValue, reason }` to `POST /api/v1/pull-requests` using the configured
-    **write-scoped** server token. An ingest-only client token is rejected (403) server-side — an
-    extracted client token can never request anyone's logs. The pull is queued + audit-logged.
+    POSTs `{ targetType, targetValue, reason }` to `POST /api/v1/pull-requests` using the token the
+    server build was initialised with, which must be **write-scoped**. An ingest-only token is
+    rejected (403). Keep the write-scoped token out of client builds: initialise dedicated-server
+    builds with it (for example read from an environment variable or a command-line argument only
+    there) and ship clients with the ingest-only SDK token; a client token then cannot request
+    anyone's logs. The pull is queued + audit-logged. (A build whose `TombstackConfig` holds a
+    studio key, an editor sign-in token or an MCP key fails; a write-scoped per-game token looks
+    like an SDK token, so keeping it out is up to your build setup.)
   - **Client side** (fully automatic, transparent): each heartbeat ack now carries
     `data.pendingRequests`. For every queued request that targets THIS client (by
     `userId`/`sessionId`/`matchId`/`serverId`) **and only while consent is granted**, the SDK POSTs
@@ -220,8 +237,17 @@ try { Load(); } catch (Exception e) { Tombstack.ReportException(e); }
   and bug reports.
 - **Offline-first + durable**: crashes/bugs are written to disk *before* the first upload
   attempt (write-ahead), uploads retry in-session with exponential backoff (2s→32s, 5
-  attempts), poison payloads (HTTP 4xx) are dropped, and anything undelivered retries on the
-  next launch from `Application.persistentDataPath/Tombstack` (server de-dups by ULID).
+  attempts), and anything undelivered retries on the next launch from
+  `Application.persistentDataPath/Tombstack` (server de-dups by ULID). A stored crash or bug
+  report is deleted only once delivered or when the server says it is invalid (HTTP 400, 413,
+  422); refused for a reason you can fix (SDK token 401, 403, 404, …) it stays on disk and is sent
+  again on a later launch (so are event/metric batches already written to disk at pause or quit).
+  At your spending cap (402) a stored crash or bug report stays on disk and is sent at the resume
+  time the server names, or as soon as the server accepts data again; everything else the cap
+  refuses is dropped. Other events and metrics, and heartbeats, refused with a 4xx are dropped and
+  counted as `tombstack.dropped_rejected`. That counter also includes stored reports that no
+  launch could deliver within 90 days (judged by the device clock), which are deleted when the
+  game next starts.
 - **Consent-aware**: until `SetConsent(true)` (when required), *nothing* is captured or sent —
   including heartbeats.
 - **Fail-silent**: the SDK never throws into game code; internal failures are logged once with
@@ -241,10 +267,13 @@ try { Load(); } catch (Exception e) { Tombstack.ReportException(e); }
   until `SetUser(realId)`. The upgrade happens in the **same session**: a one-shot
   `priorUserId` rides heartbeats until acked (and crash/bug reports while pending) so the
   server merges the pre-auth telemetry into the real player. `SetUser(null)` (logout) reverts
-  to the device id — the SDK never sends an anonymous user.
+  to the device id — the SDK never sends an anonymous user. With *Require Consent*, the device
+  identifier is not read and `identity.json` is not written until `SetConsent(true)` (a random
+  in-memory id stands in, and nothing is sent anyway); revoking consent deletes `identity.json`.
 
 ## Public API
 ```csharp
+// MAIN THREAD ONLY: called from another thread, Init logs an error and does nothing.
 Tombstack.Init(gameToken, endpoint, heartbeatIntervalSeconds = 60f, environment = null,
     autoStartSession = true, retainedLaunchLogs = 3);
 Tombstack.SetUser(userId, steamId = null);   // upgrades the device id in-session (0.16); SetUser(null) reverts to it

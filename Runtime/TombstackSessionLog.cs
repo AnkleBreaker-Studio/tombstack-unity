@@ -67,6 +67,17 @@ namespace AnkleBreaker.Tombstack
         private static long _fileBytes;
         private static int _droppedLines;
         private static bool _warned; // warn-once latch: a failing disk must never spam or feedback-loop
+        // Bumped by PurgeForRevokedConsent (under _pendingLock). A chunk remembers the value it was taken
+        // under, and flushChunk drops it on a mismatch: a periodic flush already handed to the thread pool
+        // must not write pre-revoke lines into the log the revoke just emptied.
+        private static int _purgeGeneration;
+
+        /// <summary>A pending buffer taken for writing, and the purge generation it was taken under.</summary>
+        private sealed class PendingChunk
+        {
+            public string Text;
+            public int Generation;
+        }
 
         /// <summary>
         /// Cache paths once on the main thread at Init — <c>stateDir</c> derives from
@@ -191,7 +202,7 @@ namespace AnkleBreaker.Tombstack
             if (chunk == null) return;
             try
             {
-                ThreadPool.QueueUserWorkItem(_flushWork, chunk);
+                TombstackPlatform.RunInBackground(_flushWork, chunk);
             }
             catch (Exception e)
             {
@@ -286,7 +297,7 @@ namespace AnkleBreaker.Tombstack
         }
 
         /// <summary>Swap out the pending text (and a drop marker, if any) under the lock.</summary>
-        private static string takePendingChunk()
+        private static PendingChunk takePendingChunk()
         {
             lock (_pendingLock)
             {
@@ -297,7 +308,7 @@ namespace AnkleBreaker.Tombstack
                         .Append(_droppedLines).Append(" lines dropped\n");
                     _droppedLines = 0;
                 }
-                var chunk = _pending.ToString();
+                var chunk = new PendingChunk { Text = _pending.ToString(), Generation = _purgeGeneration };
                 _pending.Length = 0;
                 return chunk;
             }
@@ -309,18 +320,70 @@ namespace AnkleBreaker.Tombstack
         {
             try
             {
-                var chunk = (string)state;
+                var chunk = (PendingChunk)state;
                 lock (_fileLock)
                 {
+                    // Taken before a consent revoke: those lines must not reach the purged log.
+                    if (chunk.Generation != Volatile.Read(ref _purgeGeneration)) return;
                     Directory.CreateDirectory(_dirPath);
-                    File.AppendAllText(_currentPath, chunk);
-                    _fileBytes += Encoding.UTF8.GetByteCount(chunk);
+                    File.AppendAllText(_currentPath, chunk.Text);
+                    _fileBytes += Encoding.UTF8.GetByteCount(chunk.Text);
                     if (_fileBytes > MAX_LOG_BYTES) trimFromFront();
                 }
             }
             catch (Exception e)
             {
                 warnOnce(e.Message);
+            }
+        }
+
+        /// <summary>
+        /// Consent revoked (<c>Tombstack.SetConsent(false)</c> after a grant): nothing logged before the
+        /// revoke may leave the device, now or after a later re-grant. Drops the pending lines, deletes the
+        /// current session's log and every retained prior session log (those are advertised to the server
+        /// for log pulls), and forgets them, so the next heartbeat advertises none and the next report
+        /// uploads only what is logged from now on. Any thread; never throws.
+        /// </summary>
+        internal static void PurgeForRevokedConsent()
+        {
+            try
+            {
+                lock (_pendingLock)
+                {
+                    _pending.Length = 0;
+                    _droppedLines = 0;
+                    Interlocked.Increment(ref _purgeGeneration);
+                }
+                if (_dirPath == null) return;
+                lock (_fileLock)
+                {
+                    _previousPath = null;
+                    _retainedPriorSessionIds = Array.Empty<string>();
+                    _fileBytes = 0;
+                    if (_currentPath != null) eraseLogFile(_currentPath);
+                    foreach (var path in enumeratePriorLogsNewestFirstLocked()) eraseLogFile(path);
+                }
+            }
+            catch (Exception e)
+            {
+                warnOnce(e.Message);
+            }
+        }
+
+        /// <summary>Delete a log file; when it cannot be deleted (held open by an antivirus, say), empty
+        /// it, so its lines are gone either way (an empty log is never uploaded). Caller holds _fileLock;
+        /// never throws.</summary>
+        private static void eraseLogFile(string path)
+        {
+            try
+            {
+                if (!File.Exists(path)) return;
+                File.Delete(path);
+            }
+            catch (Exception deleteError)
+            {
+                try { File.WriteAllBytes(path, Array.Empty<byte>()); }
+                catch (Exception e) { warnOnce(deleteError.Message + " / " + e.Message); }
             }
         }
 

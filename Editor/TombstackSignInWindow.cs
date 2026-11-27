@@ -14,7 +14,7 @@ namespace AnkleBreaker.Tombstack.Editor
     {
         private const string UXML_FILE = "TombstackSignIn.uxml";
         private const float WINDOW_WIDTH = 420f;
-        private const float WINDOW_HEIGHT = 440f;
+        private const float WINDOW_HEIGHT = 464f;
         private const string CODE_PROMPT = "Enter the code from your authenticator app.";
         private const string ERROR_CODE_REQUIRED = "two_factor_required";
         private const string ERROR_CODE_INVALID = "invalid_two_factor_code";
@@ -26,6 +26,10 @@ namespace AnkleBreaker.Tombstack.Editor
         private Label _errorLabel;
         private Label _loadingLabel;
         private Label _signupLink;
+        private Label _hostLabel;
+        // The server the window names (refreshHost). Submit re-checks it: credentials never go to a
+        // server other than the one on screen.
+        private string _shownOrigin;
         private bool _busy;
 
         /// <summary>Open (or focus) the sign-in window.</summary>
@@ -48,6 +52,11 @@ namespace AnkleBreaker.Tombstack.Editor
             _errorLabel = rootVisualElement.Q<Label>("signin-error");
             _loadingLabel = rootVisualElement.Q<Label>("signin-loading");
             _signupLink = rootVisualElement.Q<Label>("signin-signup");
+            _hostLabel = rootVisualElement.Q<Label>("signin-host");
+            // Always say where the credentials go: the project's settings decide the server.
+            refreshHost();
+            TombstackSession.OnChanged -= refreshHost; // never twice, if the GUI is rebuilt
+            TombstackSession.OnChanged += refreshHost;
 
             _submitButton?.RegisterCallback<ClickEvent>(onSubmitClicked);
             _signupLink?.RegisterCallback<ClickEvent>(onSignupClicked);
@@ -57,6 +66,7 @@ namespace AnkleBreaker.Tombstack.Editor
 
         private void OnDisable()
         {
+            TombstackSession.OnChanged -= refreshHost;
             _submitButton?.UnregisterCallback<ClickEvent>(onSubmitClicked);
             _signupLink?.UnregisterCallback<ClickEvent>(onSignupClicked);
             _passwordField?.UnregisterCallback<KeyDownEvent>(onPasswordKeyDown);
@@ -82,6 +92,21 @@ namespace AnkleBreaker.Tombstack.Editor
             if (string.IsNullOrEmpty(email) || string.IsNullOrEmpty(password))
             {
                 showError("Enter your email and password.");
+                return;
+            }
+            // The project's server may have changed since the window opened: never send to another one
+            // than the window names.
+            if (!string.Equals(TombstackSession.ServerOrigin, _shownOrigin, System.StringComparison.Ordinal))
+            {
+                refreshHost();
+                showError("The server changed to " + _shownOrigin + ". Check it, then sign in again.");
+                return;
+            }
+            // The password and the two-factor code go only to the official server, or to one the
+            // developer confirms here (a dialog naming it).
+            if (!TombstackEndpointTrust.ConfirmCurrent(askUser: true))
+            {
+                showError(TombstackEndpointTrust.NotConfirmedMessage(TombstackSession.ServerOrigin));
                 return;
             }
 
@@ -123,6 +148,13 @@ namespace AnkleBreaker.Tombstack.Editor
             foreach (var c in raw)
                 if (!char.IsWhiteSpace(c)) sb.Append(c);
             return sb.Length == 0 ? null : sb.ToString();
+        }
+
+        /// <summary>Name the server this project signs in to (and remember it for the submit check).</summary>
+        private void refreshHost()
+        {
+            _shownOrigin = TombstackSession.ServerOrigin;
+            if (_hostLabel != null) _hostLabel.text = "SIGNING IN TO " + _shownOrigin;
         }
 
         private void showCodeField()

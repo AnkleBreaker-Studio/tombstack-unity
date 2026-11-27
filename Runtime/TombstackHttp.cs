@@ -18,6 +18,24 @@ namespace AnkleBreaker.Tombstack
         Key,
     }
 
+    /// <summary>What the uploader does with a payload after a non-2xx answer (see
+    /// <see cref="TombstackHttp.ClassifyFailure"/>).</summary>
+    internal enum FailureAction
+    {
+        /// <summary>Transient (network, 408, 429, 5xx, a signing-clock 401): retry with backoff.</summary>
+        Retry,
+        /// <summary>Discard: the server says the payload itself is invalid, or a non-durable payload was
+        /// refused (analytics, a heartbeat, an upload to presigned storage).</summary>
+        Drop,
+        /// <summary>A durable report refused for a reason the studio can fix (the token, 403, 404, ...): it
+        /// stays on disk, is not retried this launch, and goes out on a later launch.</summary>
+        KeepForNextLaunch,
+        /// <summary>The studio's spending cap (402): the server refuses everything until it lifts. A stored
+        /// crash or bug report is held on disk and sent when it does; anything else is dropped
+        /// (<see cref="TombstackSpendCap"/>).</summary>
+        HoldForSpendCap,
+    }
+
     /// <summary>
     /// HTTP bookkeeping the uploader needs and <c>UnityWebRequest</c> does not give it: a server clock
     /// offset learned from response <c>Date</c> headers (so request signing survives a wrong device
@@ -34,6 +52,14 @@ namespace AnkleBreaker.Tombstack
     internal static class TombstackHttp
     {
         internal const long HTTP_UNAUTHORIZED = 401;
+        // The statuses with which the server says the PAYLOAD ITSELF is invalid. The only 4xx answers
+        // that may delete a stored crash or bug report; the CLI uploader applies the same set
+        // (tools/lib/upload-classify.mjs), and tests/client-status-policy.test.ts keeps them equal.
+        internal const long HTTP_BAD_REQUEST = 400;
+        internal const long HTTP_PAYLOAD_TOO_LARGE = 413;
+        internal const long HTTP_UNPROCESSABLE = 422;
+        internal const long HTTP_REQUEST_TIMEOUT = 408;
+        internal const long HTTP_TOO_MANY_REQUESTS = 429;
         /// <summary>Machine-readable 401 codes, from src/lib/api-error-code.ts INGEST_AUTH_FAILURES.
         /// Matched quoted, so the substring can only hit the JSON string value.</summary>
         private const string INVALID_API_KEY_CODE = "\"invalid_api_key\"";
@@ -106,6 +132,31 @@ namespace AnkleBreaker.Tombstack
                 && responseBody.IndexOf(INVALID_API_KEY_CODE, StringComparison.Ordinal) >= 0)
                 return UnauthorizedKind.Key;
             return UnauthorizedKind.Signature;
+        }
+
+        /// <summary>True when the server says the payload itself is invalid (validation, too large,
+        /// unprocessable): resending the same bytes can never succeed.</summary>
+        internal static bool IsPayloadInvalid(long status) =>
+            status == HTTP_BAD_REQUEST || status == HTTP_PAYLOAD_TOO_LARGE || status == HTTP_UNPROCESSABLE;
+
+        /// <summary>
+        /// Classify a failed upload. <paramref name="ownEndpoint"/> is false for presigned storage uploads
+        /// (log, screenshot), where any 4xx means an expired or mismatched presign. <paramref name="durable"/>
+        /// marks a report that exists only on this device (a write-ahead crash, bug report or pause/quit
+        /// batch to an ingest path): it is deleted only when its payload is invalid. A refused token, a 403
+        /// from a proxy or a 404 from a wrong path keep it for a later launch; it used to be deleted on all
+        /// of them except a 401 <c>invalid_api_key</c>. The spending cap (402) has its own action: the
+        /// caller holds crash and bug reports until the cap lifts and drops the rest.
+        /// </summary>
+        internal static FailureAction ClassifyFailure(long status, string body, bool durable, bool ownEndpoint)
+        {
+            if (status < 400 || status >= 500 || status == HTTP_REQUEST_TIMEOUT || status == HTTP_TOO_MANY_REQUESTS)
+                return FailureAction.Retry;
+            if (!ownEndpoint) return FailureAction.Drop;
+            if (ClassifyUnauthorized(status, body) == UnauthorizedKind.Signature) return FailureAction.Retry;
+            if (IsPayloadInvalid(status)) return FailureAction.Drop;
+            if (TombstackSpendCap.IsCapRefusal(status)) return FailureAction.HoldForSpendCap;
+            return durable ? FailureAction.KeepForNextLaunch : FailureAction.Drop;
         }
 
         /// <summary>

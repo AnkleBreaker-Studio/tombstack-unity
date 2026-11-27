@@ -1,4 +1,5 @@
 using System.Runtime.InteropServices;
+using System.Threading;
 using UnityEngine;
 
 namespace AnkleBreaker.Tombstack
@@ -46,6 +47,22 @@ namespace AnkleBreaker.Tombstack
                 default:
                     return "other";
             }
+        }
+
+        /// <summary>
+        /// Hand short background work (file reads and writes, a PNG encode) to the thread pool — or, on a
+        /// WebGL player, run it inline: managed code there has no worker thread, and queued items may never
+        /// run (the offline queue would never load, delivered files never be deleted, the session log never
+        /// flush, and an exception report waiting for its screenshot never be sent). Callers keep their own
+        /// error handling, exactly as with <c>ThreadPool.QueueUserWorkItem</c>.
+        /// </summary>
+        internal static void RunInBackground(WaitCallback work, object state = null)
+        {
+#if UNITY_WEBGL && !UNITY_EDITOR
+            work(state);
+#else
+            ThreadPool.QueueUserWorkItem(work, state);
+#endif
         }
 
         internal static string Arch()

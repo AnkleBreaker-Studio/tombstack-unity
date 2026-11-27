@@ -35,7 +35,7 @@ namespace AnkleBreaker.Tombstack.Editor
         public static async Task<ApiResult<EditorLoginData>> LoginAsync(string email, string password, string code = null)
         {
             var body = buildLoginBody(email, password, code);
-            var raw = await sendAsync(UnityWebRequest.kHttpVerbPOST, LOGIN_PATH, body, null);
+            var raw = await sendAsync(UnityWebRequest.kHttpVerbPOST, LOGIN_PATH, body, null, sendsCredentials: true);
             if (!raw.IsHttpSuccess)
                 return ApiResult<EditorLoginData>.Failure(raw.Status, describeAuthFailure(raw), errorCodeOf(raw));
             var envelope = parse<LoginEnvelope>(raw.Body);
@@ -123,13 +123,21 @@ namespace AnkleBreaker.Tombstack.Editor
             return sb.ToString();
         }
 
-        /// <summary>Run one request without blocking; resolves on the editor main thread.</summary>
-        private static async Task<RawResponse> sendAsync(string method, string path, string body, string bearerToken)
+        /// <summary>Run one request without blocking; resolves on the editor main thread. A request that
+        /// carries credentials (a bearer token, or the login body when <paramref name="sendsCredentials"/>)
+        /// is sent only to the official server or a server the developer confirmed; otherwise nothing is
+        /// sent and the result says why (<see cref="TombstackEndpointTrust"/>).</summary>
+        private static async Task<RawResponse> sendAsync(
+            string method, string path, string body, string bearerToken, bool sendsCredentials = false)
         {
             UnityWebRequest req = null;
             try
             {
-                req = new UnityWebRequest(TombstackProjectSettingsSO.instance.ResolveEndpoint() + path, method);
+                var settings = TombstackProjectSettingsSO.instance;
+                var origin = settings.ResolveOrigin();
+                if ((sendsCredentials || !string.IsNullOrEmpty(bearerToken)) && !TombstackEndpointTrust.IsTrusted(origin))
+                    return RawResponse.NotConfirmed(TombstackEndpointTrust.NotConfirmedMessage(origin));
+                req = new UnityWebRequest(settings.ResolveEndpoint() + path, method);
                 req.downloadHandler = new DownloadHandlerBuffer();
                 if (body != null)
                 {
@@ -174,6 +182,7 @@ namespace AnkleBreaker.Tombstack.Editor
         /// <summary>User-facing message for a failed login response.</summary>
         private static string describeAuthFailure(RawResponse raw)
         {
+            if (raw.Refused) return raw.TransportError;
             if (raw.TransportFailed) return "Could not reach Tombstack — check your connection.";
             if (raw.Status == HTTP_UNAUTHORIZED) return "Wrong email or password.";
             if (raw.Status == HTTP_TOO_MANY_REQUESTS) return "Too many attempts — wait a minute and retry.";
@@ -183,6 +192,7 @@ namespace AnkleBreaker.Tombstack.Editor
         /// <summary>User-facing message for a failed authorized call.</summary>
         private static string describeFailure(RawResponse raw)
         {
+            if (raw.Refused) return raw.TransportError;
             if (raw.TransportFailed) return "Could not reach Tombstack — check your connection.";
             if (raw.Status == HTTP_UNAUTHORIZED) return "Session expired — sign in again.";
             if (raw.Status == HTTP_TOO_MANY_REQUESTS) return "Rate limited — slow down and retry.";
@@ -211,16 +221,23 @@ namespace AnkleBreaker.Tombstack.Editor
             public readonly string Body;
             public readonly bool TransportFailed;
             public readonly string TransportError;
+            /// <summary>True when nothing was sent: the server is not confirmed for credentials
+            /// (<see cref="TransportError"/> holds the message to show).</summary>
+            public readonly bool Refused;
 
             public bool IsHttpSuccess => !TransportFailed && Status >= 200 && Status < 300;
 
-            public RawResponse(long status, string body, bool transportFailed, string transportError = null)
+            public RawResponse(long status, string body, bool transportFailed, string transportError = null, bool refused = false)
             {
                 Status = status;
                 Body = body;
                 TransportFailed = transportFailed;
                 TransportError = transportError;
+                Refused = refused;
             }
+
+            /// <summary>A request that was not sent because its server is not confirmed.</summary>
+            public static RawResponse NotConfirmed(string message) => new RawResponse(0, null, true, message, refused: true);
         }
     }
 }

@@ -10,11 +10,11 @@ your Tombstack account. Requires **Unity 6 (6000.0)** or newer.
 
 ### 1. Install
 
-- **Tarball (recommended):** download `com.anklebreaker.tombstack-0.21.8.tgz` from
-  `https://tombstack.com/downloads/com.anklebreaker.tombstack-0.21.8.tgz`, then
+- **Tarball (recommended):** download `com.anklebreaker.tombstack-0.21.9.tgz` from
+  `https://tombstack.com/downloads/com.anklebreaker.tombstack-0.21.9.tgz`, then
   Package Manager ▸ `+` ▸ *Add package from tarball…*
 - Or Package Manager ▸ `+` ▸ *Add package from git URL…* →
-  `https://github.com/AnkleBreaker-Studio/tombstack-unity.git#v0.21.8`
+  `https://github.com/AnkleBreaker-Studio/tombstack-unity.git#v0.21.9`
 
 ### 2. Sign in (mandatory)
 
@@ -31,9 +31,11 @@ The plugin is inactive until you connect your Tombstack account.
 1. Open **Window ▸ Tombstack ▸ Hub**.
 2. On the **Connection** tab, pick your studio and game, then click **LINK THIS PROJECT**.
 3. The plugin mints a per-game SDK token (`tmb_…`) and writes it — together with the
-   endpoint — into `Assets/Tombstack/Resources/TombstackConfig.asset` (created if missing).
-   This is the asset the runtime SDK auto-initializes from; the token is game-facing and is
-   supposed to ship with your build.
+   endpoint — into the `TombstackConfig` asset the runtime SDK auto-initializes from (an asset
+   named `TombstackConfig` in a `Resources` folder; created at
+   `Assets/Tombstack/Resources/TombstackConfig.asset` if there is none). If several such assets
+   exist, or the one the game loads is inside a package, linking stops and names them. The token
+   is game-facing and is supposed to ship with your build.
 
 *Screenshot placeholder: `images/hub-connection.png` — Hub connection tab with status card.*
 
@@ -115,7 +117,8 @@ and the two screenshot toggles. At runtime, `Tombstack.SetCaptureEnabled(Tombsta
 *Exceptions* / *Heartbeats* / *Breadcrumbs* / *FrameStats* / *AppHangs* live — manual
 `ReportException` and `AddBreadcrumb` always work regardless. All are consent-gated —
 with *Require consent* enabled, nothing is captured, mirrored, or reported until your game
-calls `Tombstack.SetConsent(true)`.
+calls `Tombstack.SetConsent(true)`. Revoking (`SetConsent(false)` after a grant) also deletes the
+upload queue, the session logs and the session marker kept from the consented period.
 
 ### Files the SDK keeps under `persistentDataPath/Tombstack/`
 
@@ -123,7 +126,7 @@ calls `Tombstack.SetConsent(true)`.
 |---|---|
 | `session.log` | Rolling log of the current session (~512 KB cap, newest lines win) |
 | `session-<sessionId>.log` (0.18+) | The last **N** per-launch logs (N = *Retain Launch Logs*, default 3), kept for unclean-shutdown upload and on-demand server log pulls of a past session. Supersedes the single `previous-session.log`; legacy `session.log`/`previous-session.log` are migrated, not lost |
-| `identity.json` (0.16+) | The persisted device-derived provisional id (`dev_…`) used until `SetUser(realId)` |
+| `identity.json` (0.16+) | The persisted device-derived provisional id (`dev_…`) used until `SetUser(realId)`. With *Require consent*, written only once consent is granted, and deleted when consent is revoked |
 | `session.lock` | Dirty-session marker (present while running; gone after a clean quit) |
 | `*.json` | Write-ahead upload queue (crashes/bugs that have not been delivered yet) |
 | `instance.lock` | Held by the running process that owns this folder |
@@ -135,7 +138,7 @@ calls `Tombstack.SetConsent(true)`.
 
 | Setting | Effect |
 |---|---|
-| Base URL override | Point the plugin + SDK at a self-hosted/staging Tombstack tenant. Re-link after changing it. |
+| Base URL override | Point the plugin + SDK at another Tombstack server, e.g. staging (`https` only; `http` only for localhost). Your sign-in goes to that server only after you confirm it on your computer. Re-link after changing it. |
 | Heartbeat (s) | Seconds between session heartbeats (written into the config asset; runtime clamps 15–240). The upper bound sits inside the server's 5-minute session window on purpose: beat more slowly and your sessions blink out between their own beats, understating live CCU and the peak concurrency you are billed on. |
 | Environment | Deployment-environment label (production / staging / …) stamped on every payload; written into the config asset. Defaults to `production`. |
 | Require consent | When on, the SDK captures nothing until your game calls `Tombstack.SetConsent(true)`. |
@@ -146,7 +149,7 @@ calls `Tombstack.SetConsent(true)`.
 
 ```csharp
 Tombstack.Init(gameToken, endpoint, heartbeatIntervalSeconds = 60f, environment = null,
-    autoStartSession = true, retainedLaunchLogs = 3);            // auto-called via TombstackConfig
+    autoStartSession = true, retainedLaunchLogs = 3);            // auto-called via TombstackConfig; MAIN THREAD ONLY
 Tombstack.SetConsent(bool granted);
 Tombstack.SetUser(userId, steamId = null);                       // upgrades the device id in-session (0.16); SetUser(null) reverts to it
 Tombstack.SetUserMetadata(Dictionary<string,string> metadata);   // per-player custom metadata

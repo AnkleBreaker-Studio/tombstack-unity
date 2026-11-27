@@ -21,6 +21,9 @@ namespace AnkleBreaker.Tombstack
     /// per frame. What the bucket refuses is counted and surfaced (breadcrumb, session log).</item>
     /// <item><b>Synchronous log flush pacing</b> — a non-fatal capture flushes the session log to
     /// disk synchronously at most once per <see cref="SYNC_FLUSH_MIN_INTERVAL_SECONDS"/>s.</item>
+    /// <item><b>Log upload pacing</b> — a non-fatal report asks for the session log (up to 512 KB) at
+    /// most once per <see cref="LOG_UPLOAD_MIN_INTERVAL_SECONDS"/>s. Every admitted report used to
+    /// upload it: a recurring exception (one report a minute) cost the player ~30 MB of data an hour.</item>
     /// </list>
     /// This key is CLIENT-SIDE only. The <c>signature</c> sent on the wire is unchanged: the server
     /// derives its own grouping from the stack, and its deterministic crash id includes the raw
@@ -33,6 +36,7 @@ namespace AnkleBreaker.Tombstack
         internal const int BUCKET_CAPACITY = 10;
         internal const double REFILL_SECONDS = 6.0;
         internal const double SYNC_FLUSH_MIN_INTERVAL_SECONDS = 3.0;
+        internal const double LOG_UPLOAD_MIN_INTERVAL_SECONDS = 600.0;
         private const int KEY_FRAMES = 8;
         private const int MAX_KEY_LENGTH = 2048;
         private const char NUMBER_MARK = '#';
@@ -46,6 +50,7 @@ namespace AnkleBreaker.Tombstack
         private static double _tokens = BUCKET_CAPACITY;
         private static double _lastRefillSeconds = double.NaN;
         private static double _lastSyncFlushSeconds = double.NegativeInfinity;
+        private static double _lastLogUploadSeconds = double.NegativeInfinity;
         // Reports the bucket refused since the last one it admitted (surfaced on that next report).
         private static int _rateLimitedPending;
         // Reports the bucket refused this launch (diagnostics + the log-once latch).
@@ -63,6 +68,7 @@ namespace AnkleBreaker.Tombstack
                 _tokens = BUCKET_CAPACITY;
                 _lastRefillSeconds = double.NaN;
                 _lastSyncFlushSeconds = double.NegativeInfinity;
+                _lastLogUploadSeconds = double.NegativeInfinity;
             }
             Interlocked.Exchange(ref _rateLimitedPending, 0);
             Interlocked.Exchange(ref _rateLimitedTotal, 0);
@@ -133,6 +139,18 @@ namespace AnkleBreaker.Tombstack
             {
                 if (nowSeconds - _lastSyncFlushSeconds < SYNC_FLUSH_MIN_INTERVAL_SECONDS) return false;
                 _lastSyncFlushSeconds = nowSeconds;
+                return true;
+            }
+        }
+
+        /// <summary>True when a non-fatal report may ask for the session log now (and claims the slot);
+        /// false means the report goes out without it. The first report of a launch always may.</summary>
+        internal static bool TryClaimLogUpload(double nowSeconds)
+        {
+            lock (_lock)
+            {
+                if (nowSeconds - _lastLogUploadSeconds < LOG_UPLOAD_MIN_INTERVAL_SECONDS) return false;
+                _lastLogUploadSeconds = nowSeconds;
                 return true;
             }
         }

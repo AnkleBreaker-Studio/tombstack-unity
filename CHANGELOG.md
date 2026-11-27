@@ -2,6 +2,114 @@
 
 All notable changes to `com.anklebreaker.tombstack`.
 
+## [0.21.9] - 2026-11-27
+
+### Fixed
+- The first heartbeat of a session now leaves within a second of the session starting, or of
+  `SetConsent(true)` when consent is required. It used to wait one full heartbeat interval (60 s by
+  default) after `Init`, so a player whose game crashed within that time was never seen as a session
+  and the crash had no session to count against. A `SetUser` called in the same frame as `Init` is
+  still carried by that first heartbeat.
+- The package tarball now contains the `.meta` files of `Runtime`, `Editor`, `package.json` and
+  `CHANGELOG.md`. Installed with *Add package from tarball*, Unity reported those four assets as
+  having no meta file in an immutable folder and ignored them. Git URL and folder installs were not
+  affected.
+- The device snapshot attached to crash reports, bug reports and the first heartbeat is kept within
+  the server's limits. Long device strings are trimmed, and a refresh rate or DPI the device reports
+  as not-a-number or infinite (possible on headless servers) is sent as 0. Either case used to make
+  the server refuse every crash and bug report of that device, and a non-finite value also kept its
+  heartbeats from being accepted.
+- The automatic `tombstack.rtt_ms` metric (*Auto Rtt Metric*, on by default; an older note called it
+  opt-in) no longer uses up the per-session budget for custom events and metrics. It sent one row
+  after every successful upload, heartbeats included: about 60 rows per 30 minutes, the whole
+  free-plan allowance, so the game's own events were refused. It now sends at most one row every
+  15 minutes, the mean round-trip time of the uploads since the previous row. The server keeps up to
+  3 of these rows per session per 30 minutes apart from your own events and metrics; at 15 minutes
+  the SDK never sends more than that, even when a row waits a minute in its batch. The SDK's own
+  count of the session budget no longer includes them either, so near the limit they never take the
+  place of one of your events.
+- Revoking consent (`SetConsent(false)` after a grant) now also deletes the session logs (the
+  current one and the retained ones) and the session marker, drops the previous session's crash
+  report if it had not been sent yet, and frees the screenshots kept in memory for reports that were
+  waiting to be sent. A crash or bug report whose screenshot was still being taken at the revoke is
+  discarded too. Before, after a new grant the next crash or bug report uploaded a log that still
+  held the lines written before the revoke, retained logs could still be pulled, a session that
+  died after the revoke was reported at the next launch, and a report whose screenshot completed
+  after the revoke was written to the offline queue and could be sent after the grant. A
+  `SetConsent(false)` made before `Init` is applied the same way when `Init` runs.
+- With *Require Consent*, the device identifier is no longer read, and `identity.json` no longer
+  written, before `SetConsent(true)`. Until then the SDK uses a random id kept in memory (nothing is
+  sent before consent); the persistent device id is derived and stored when consent is granted, on
+  the main thread (when `SetConsent(true)` is called from another thread, on the next frame).
+  Revoking consent deletes `identity.json`. Without *Require Consent* nothing changes.
+- Editor plugin: your Tombstack sign-in (password, two-factor code and editor session) goes only to
+  `https://tombstack.com`, or to a server you confirm on your computer. A project's endpoint
+  override must be an `https` address (`http` only for localhost) and is ignored otherwise; the
+  first time a project uses another server, Sign In, Refresh and Link ask you to confirm it in a
+  dialog that names it, and the plugin sends nothing to it before you do. The editor session is
+  kept per server, so signing in to a staging server no longer replaces your main sign-in, and a
+  rejected session on one server no longer signs you out of the other (nor, once you have signed in
+  again, out of the new session). The sign-in window shows
+  the server, and the Hub stops showing studios, games and dashboard figures of another server,
+  sign-in or linked game, including an answer that arrives after the change, and loads the current
+  ones instead. If you used an override before, sign in again for that server.
+- Editor plugin: *Link this project* writes the token into the `TombstackConfig` asset the game
+  actually loads (named `TombstackConfig`, in a `Resources` folder). It used to take the first
+  config asset found anywhere, so with a second one in the project (a copy, a template, one in a
+  package) the token could land in an asset the game never reads while the Hub showed it as
+  present. When several candidates exist, or the one the game loads is inside a package, linking
+  now stops before a token is minted and names them; the Hub status and the Project Settings
+  toggles read and write that same asset.
+- At your spending cap (HTTP 402), crash and bug reports are no longer deleted. They stay on the
+  device and are sent at the time the server says ingestion resumes, spread over at most 5 minutes
+  so your players do not all send at once, or as soon as the server accepts a request again (for
+  example a heartbeat right after you raise the cap). While the cap holds, new reports wait on the
+  device instead of being sent to be refused; a launch during the cap learns it from its first
+  refused request. Events, metrics and heartbeats refused at the cap are dropped and not sent again,
+  as the cap promises, and counted in `tombstack.dropped_rejected`.
+- Crash and bug reports stored on the device are no longer deleted when the server refuses them
+  for another reason you can fix: a 403, a wrong endpoint path (404), 405, 410 and other 4xx
+  answers. Only a 401 for the SDK token kept them before. They now stay on disk and are sent again
+  on a later launch. A report is deleted only when delivered or when the server says it is invalid
+  (400, 413, 422). The same applies to event and metric batches already written to disk (at pause
+  and quit); other events and metrics, and heartbeats, are dropped on a 4xx as before. A stored
+  report that no launch could deliver within 90 days (judged by the device clock) is deleted when
+  the game next starts, counted in `tombstack.dropped_rejected`, so a refusal that never clears
+  cannot fill the offline queue and leave new crash reports without a copy on disk.
+- A screenshot over the server's 16 MiB limit (possible with *Screenshot Max Dimension* set to 0 on a
+  very large display) is no longer attached. The server refused the whole bug or crash report in
+  that case, and the report, the player's text included, was lost; it now goes out without the
+  image and a console warning suggests a lower *Screenshot Max Dimension*.
+- At most two reports waiting to be sent keep their screenshot in memory. With *Capture Screenshot
+  On Exception* on and the device offline, every queued crash kept its image (1–3 MB each), which
+  could add up to hundreds of megabytes on a phone. Older waiting reports are still sent, without
+  their screenshot, as a report restored after a restart already was. A delivered report also
+  releases its copy of the image once the upload has it.
+- A non-fatal exception report now carries the session log (up to 512 KB) at most once every 10
+  minutes. Every report used to upload the whole log, so an exception that recurs once a minute
+  cost the player about 30 MB of data per hour. Fatal crashes and player bug reports still always
+  carry the log.
+- `Tombstack.Init` called from a thread other than Unity's main thread (for example after an
+  `await` on a remote-config fetch) now logs an error and changes nothing, so a later call from the
+  main thread works. It used to fail half-way and leave the SDK marked as initialised with nothing
+  running, sending nothing for the whole session. An `Init` that fails before the SDK is running is
+  also undone, the provisional player id it assigned included, so it can be called again (a player
+  set with `SetUser` before `Init` is kept).
+- WebGL: the SDK no longer relies on background threads, which a WebGL player does not have for game
+  code. Reading the previous run's offline queue, deleting delivered queue files, flushing the
+  session log, preparing a log upload and encoding an exception screenshot now run directly on
+  WebGL. Before, they could wait forever: the offline queue was never read and, with *Capture
+  Screenshot On Exception* on, those crash reports were never sent. The README now says to use one
+  SDK per WebGL build (this package or the Web SDK), since both together count each player twice.
+- Only the game's SDK token belongs in `TombstackConfig`, which ships inside the build. A studio key,
+  an editor sign-in token or an MCP key put there instead is now refused: `Init` logs an error and
+  sends nothing, the Hub shows it as not an SDK token instead of "Present", and a build whose config
+  holds one fails, naming the asset. A config still holding the placeholder token only warns at build
+  time. The README's log-pull section now says to keep the write-scoped token used for server log
+  pulls out of client builds.
+
+Session budgeting is unchanged: custom events and metrics are capped at 60 rows per session per 30 minutes for non-paying studios once the server has announced the budget; paid plans and studios on a raised ingest capacity are not capped. Crashes, bug reports and heartbeats are never affected, and the SDK's own round-trip rows are not counted in it.
+
 ## [0.21.8] - 2026-11-21
 
 ### Changed

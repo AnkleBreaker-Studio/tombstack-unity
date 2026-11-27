@@ -23,6 +23,27 @@ namespace AnkleBreaker.Tombstack
         /// <summary>The unfilled token default. See <see cref="ENDPOINT_PLACEHOLDER"/>.</summary>
         public const string TOKEN_PLACEHOLDER = "tmb_REPLACE_ME";
 
+        // Tombstack credentials that also start with "tmb_" but are NOT per-game SDK tokens (an SDK token
+        // is "tmb_" + 48 hex, so these can never be one). This asset ships inside the build, readable by
+        // anyone who has it; only the ingest-only SDK token is made for that. Same prefixes as the server
+        // (src/lib/studio-key.ts, editor-auth.ts, mcp-key.ts; tests/unity-shipped-credential-guard.test.ts).
+        internal const string STUDIO_KEY_PREFIX = "tmb_st_";
+        internal const string EDITOR_TOKEN_PREFIX = "tmb_ed_";
+        internal const string MCP_KEY_PREFIX = "tmb_mcp_";
+
+        /// <summary>What kind of non-SDK Tombstack credential <paramref name="token"/> is (for a message),
+        /// or null when it is not one: a studio key, an editor sign-in token or an MCP key must never be
+        /// in a game build. Read by the runtime (refuses to initialise), the editor and the build guard.</summary>
+        internal static string DescribeNonSdkCredential(string token)
+        {
+            if (string.IsNullOrEmpty(token)) return null;
+            var t = token.Trim();
+            if (t.StartsWith(STUDIO_KEY_PREFIX, System.StringComparison.Ordinal)) return "a studio key (tmb_st_...)";
+            if (t.StartsWith(EDITOR_TOKEN_PREFIX, System.StringComparison.Ordinal)) return "an editor sign-in token (tmb_ed_...)";
+            if (t.StartsWith(MCP_KEY_PREFIX, System.StringComparison.Ordinal)) return "an MCP key (tmb_mcp_...)";
+            return null;
+        }
+
         [Tooltip("Tombstack base URL — copy it from your dashboard. MUST be changed: the default does not resolve, and the SDK refuses to initialise while it is unfilled.")]
         [SerializeField] private string _endpoint = ENDPOINT_PLACEHOLDER;
 
@@ -62,7 +83,7 @@ namespace AnkleBreaker.Tombstack
         [Tooltip("On launch, detect a previous session that ended without a clean shutdown (hard crash, OOM kill, force quit) and report it with the preserved log.")]
         [SerializeField] private bool _detectUncleanShutdown = true;
 
-        [Tooltip("Automatically emit a 'tombstack.rtt_ms' metric measuring the round-trip time of each successful ingest upload.")]
+        [Tooltip("Emit a 'tombstack.rtt_ms' metric: the mean round-trip time of the SDK's uploads, at most one value every 15 minutes. Each value is stored and billed as a metric row, but does not use the per-session allowance for your own events and metrics.")]
         [SerializeField] private bool _autoRttMetric = true;
 
         [Tooltip("Automatically add a breadcrumb when a scene loads or the active scene changes.")]

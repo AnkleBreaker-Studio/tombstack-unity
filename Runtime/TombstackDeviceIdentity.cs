@@ -25,6 +25,10 @@ namespace AnkleBreaker.Tombstack
     /// main thread (SystemInfo / Application.persistentDataPath are main-thread-only). Never throws
     /// into Init — every failure degrades to a freshly minted id (worst case: a new id per launch
     /// on a device with no writable storage).
+    ///
+    /// Consent: with RequireConsent and no consent yet, nothing here may read or store an identifier on
+    /// the device. Until consent is granted the SDK uses <see cref="MintEphemeral"/> (random, in memory
+    /// only) and calls <see cref="Acquire"/> afterwards; a revoke deletes the file (<see cref="Forget"/>).
     /// </summary>
     internal static class TombstackDeviceIdentity
     {
@@ -36,11 +40,12 @@ namespace AnkleBreaker.Tombstack
         // is a corrupt/tampered file and falls through to a fresh mint.
         private const int MAX_PERSISTED_ID_LENGTH = 40;
 
-        /// <summary>Restore the persisted device id, or mint + persist a fresh one. Main thread only.</summary>
+        /// <summary>Restore the persisted device id, or mint + persist a fresh one. Main thread only
+        /// (minting reads SystemInfo). Call only with consent granted (or not required).</summary>
+        /// <param name="filePath">From <see cref="FilePath"/>; null when storage is unavailable.</param>
         /// <param name="salt">The game's ingest token — per-game salt for cross-tenant unlinkability.</param>
-        internal static string Acquire(string salt)
+        internal static string Acquire(string filePath, string salt)
         {
-            var filePath = identityFilePath();
             var persisted = readPersisted(filePath);
             if (persisted != null) return persisted; // the file wins: stable across token rotation
             var minted = mint(salt);
@@ -48,8 +53,32 @@ namespace AnkleBreaker.Tombstack
             return minted; // a failed persist still returns the minted id (non-sticky, but valid)
         }
 
-        /// <summary>Resolve <c>persistentDataPath/Tombstack/identity.json</c>, or null when unavailable.</summary>
-        private static string identityFilePath()
+        /// <summary>A stand-in id for the time consent is pending: same shape as a real one
+        /// (<c>"dev_" + 16 hex</c>), random, kept in memory only. It reads nothing on the device and
+        /// writes nothing. Nothing is sent before consent; only a payload captured between an
+        /// off-main-thread grant and the next frame can carry it. Any thread.</summary>
+        internal static string MintEphemeral()
+        {
+            return ID_PREFIX + Guid.NewGuid().ToString("N").Substring(0, HASH_HEX_CHARS);
+        }
+
+        /// <summary>Delete the persisted id (consent revoked). Any thread; never throws.</summary>
+        /// <param name="filePath">From <see cref="FilePath"/>; null is a no-op.</param>
+        internal static void Forget(string filePath)
+        {
+            try
+            {
+                if (!string.IsNullOrEmpty(filePath) && File.Exists(filePath)) File.Delete(filePath);
+            }
+            catch (Exception e)
+            {
+                TombstackLog.Warn($"device identity delete failed: {e.Message}");
+            }
+        }
+
+        /// <summary><c>persistentDataPath/Tombstack/identity.json</c>, or null when unavailable. Main
+        /// thread only (persistentDataPath); computing the path reads nothing from the device.</summary>
+        internal static string FilePath()
         {
             try
             {

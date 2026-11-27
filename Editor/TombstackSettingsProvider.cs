@@ -144,13 +144,44 @@ namespace AnkleBreaker.Tombstack.Editor
             }
             else
             {
-                showStatus("No TombstackConfig asset yet — link the project from the Hub to create one.");
+                showStatus(TombstackConfigWriter.DescribeConfigProblem()
+                           ?? "No TombstackConfig asset yet — link the project from the Hub to create one.");
             }
+
+            // The endpoint comes from a file committed with the project: say when it is ignored or when
+            // this computer has not confirmed it yet.
+            if (settings.HasInvalidEndpointOverride)
+                showStatus("The endpoint in this project is not an https address and is ignored; the plugin uses "
+                           + TombstackProjectSettingsSO.DEFAULT_ENDPOINT + ".");
+            else if (!TombstackEndpointTrust.IsTrusted(settings.ResolveOrigin()))
+                showStatus(TombstackEndpointTrust.NotConfirmedMessage(settings.ResolveOrigin()));
         }
 
         private static void onEndpointApplyClicked(ClickEvent evt)
         {
-            TombstackProjectSettingsSO.instance.SetEndpointOverride(_endpointField?.value);
+            var settings = TombstackProjectSettingsSO.instance;
+            var raw = _endpointField?.value?.Trim() ?? "";
+            if (raw.Length == 0)
+            {
+                settings.SetEndpointOverride("");
+                TombstackSession.NotifyServerChanged(); // open windows follow (refreshes this page too)
+                showStatus("Endpoint cleared: the plugin uses " + TombstackProjectSettingsSO.DEFAULT_ENDPOINT
+                           + ". Re-link the project to push it into the config asset.");
+                return;
+            }
+            if (!TombstackEndpointTrust.TryValidateBaseUrl(raw, out _, out var origin))
+            {
+                showStatus("Not saved: use an https:// address (http:// only for localhost).");
+                return;
+            }
+            // Your sign-in goes to this server: confirm it now, on this computer.
+            if (!TombstackEndpointTrust.ConfirmWithDialog(origin))
+            {
+                showStatus("Not saved: the server was not confirmed.");
+                return;
+            }
+            settings.SetEndpointOverride(raw);
+            TombstackSession.NotifyServerChanged(); // open windows follow (refreshes this page too)
             showStatus("Endpoint saved. Re-link the project to push it into the config asset.");
         }
 

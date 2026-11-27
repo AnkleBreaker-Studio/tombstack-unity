@@ -26,7 +26,7 @@
 
         <ui:VisualElement class="tmb-card">
             <ui:Label text="ENDPOINT" class="tmb-head" style="margin-bottom: 8px;" />
-            <ui:Label text="Override the Tombstack base URL for self-hosted or staging tenants. Leave empty for the default. Re-link the project after changing it so the config asset picks up the new URL." class="tmb-dim" style="margin-bottom: 8px;" />
+            <ui:Label text="Override the Tombstack base URL, for example for a staging server (https only; http only for localhost). Leave empty for the default. Your sign-in is sent to another server only after you confirm it on this computer. Re-link the project after changing it so the config asset picks up the new URL." class="tmb-dim" style="margin-bottom: 8px;" />
             <ui:TextField name="set-endpoint" label="BASE URL" />
             <ui:Button name="set-endpoint-apply" text="APPLY" class="tmb-btn" style="align-self: flex-start; margin-top: 6px;" />
         </ui:VisualElement>

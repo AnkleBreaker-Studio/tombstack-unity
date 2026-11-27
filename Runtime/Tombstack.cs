@@ -199,6 +199,9 @@ namespace AnkleBreaker.Tombstack
         // CaptureAllowed stayed false, dropping crashes as well as telemetry.
         // (Same precedent as _environmentExplicit and _captureOverridden.)
         private static volatile bool _consentExplicit;
+        // Set when consent is revoked before Init, when the session logs, the marker and the offline
+        // queue are not located yet: Init purges them once they are (see purgeLocalStateForRevokedConsent).
+        private static volatile bool _purgeAtInit;
         // v0.15: send gate — the SDK sends NOTHING (heartbeats + event/metric batches) until the game
         // calls StartSession() or Init auto-starts it. Lets the game set user identity / environment /
         // metadata FIRST so the first heartbeat isn't anonymous + production. One-way latch (never
@@ -227,7 +230,7 @@ namespace AnkleBreaker.Tombstack
         // servers, CI), where the end-of-frame a screenshot waits for never comes.
         private static bool _screenshotsSupported;
         // v0.9 autonomy toggles — default ON; overridden from TombstackConfigSO at auto-init.
-        private static bool _autoRttMetric = true;        // §K1: auto tombstack.rtt_ms after each ingest POST
+        private static bool _autoRttMetric = true;        // §K1: auto tombstack.rtt_ms, mean upload RTT, ≤1 row per 15 min
         private static bool _autoSceneBreadcrumbs = true; // §K2: auto breadcrumb on scene load / active change
         // v0.11 app-hang watchdog — default ON, 5s; overridden from TombstackConfigSO at auto-init.
         // Volatile: flipped by SetCaptureEnabled from anywhere; read wherever the watchdog is (re)armed.
@@ -269,6 +272,15 @@ namespace AnkleBreaker.Tombstack
         private static string _provisionalUserId;
         private static string _pendingPriorUserId;
         private static readonly object _identityLock = new object();
+        // Consent-gated identity: with consent pending at Init (RequireConsent), the provisional id is a
+        // random in-memory stand-in and nothing is read from or written to the device for it; the
+        // persistent device id is derived once consent is granted (ResolveDeferredIdentity, main thread).
+        // The path is cached at Init (persistentDataPath is main-thread-only).
+        private static volatile bool _identityDeferred;
+        private static string _identityFilePath;
+        // Managed id of the Unity main thread, stamped in the earliest runtime phase (stampMainThread).
+        // 0 = unknown (an edit-mode caller): main-thread-only work is then left to the upload host.
+        private static volatile int _mainThreadId;
         // Per-user custom metadata, merged via SetUserMetadata, sent as a "metadata" object on each
         // heartbeat. Keyed to _userId — cleared when SetUser changes the player. Locked: read off-thread.
         private static readonly Dictionary<string, string> _userMetadata = new Dictionary<string, string>(StringComparer.Ordinal);
@@ -539,6 +551,7 @@ namespace AnkleBreaker.Tombstack
                 _initialized = false;
                 _consent = true;
                 _consentExplicit = false;
+                _purgeAtInit = false;
                 _collectingStarted = false;
                 _autoCaptureExceptions = true;
                 _sendExceptionsInEditor = true;
@@ -564,6 +577,8 @@ namespace AnkleBreaker.Tombstack
                 _userId = null;
                 _steamId = null;
                 lock (_identityLock) { _provisionalUserId = null; _pendingPriorUserId = null; }
+                _identityDeferred = false;
+                _identityFilePath = null;
                 lock (_userMetadataLock)
                 {
                     _userMetadata.Clear();
@@ -597,6 +612,17 @@ namespace AnkleBreaker.Tombstack
                 TombstackLog.Warn($"static reset failed: {e.Message}");
             }
         }
+
+        /// <summary>Remember which thread is Unity's main thread, in the earliest runtime phase.</summary>
+        [RuntimeInitializeOnLoadMethod(RuntimeInitializeLoadType.SubsystemRegistration)]
+        private static void stampMainThread()
+        {
+            _mainThreadId = System.Threading.Thread.CurrentThread.ManagedThreadId;
+        }
+
+        /// <summary>True only on Unity's main thread, once it is known (see <see cref="_mainThreadId"/>).</summary>
+        private static bool onMainThread() =>
+            _mainThreadId != 0 && System.Threading.Thread.CurrentThread.ManagedThreadId == _mainThreadId;
 
         /// <summary>Auto-init from a <c>Resources/TombstackConfig</c> asset, if present and enabled.</summary>
         [RuntimeInitializeOnLoadMethod(RuntimeInitializeLoadType.BeforeSceneLoad)]
@@ -684,6 +710,25 @@ namespace AnkleBreaker.Tombstack
                         + "The placeholder endpoint " + TombstackConfigSO.ENDPOINT_PLACEHOLDER + " does not resolve, so NO crashes, bug reports, events or sessions are being sent.");
                     return;
                 }
+                // A studio key, an editor sign-in token or an MCP key is not an SDK token: the server refuses
+                // it for ingestion anyway, and it must not be in a game build at all.
+                var nonSdkCredential = TombstackConfigSO.DescribeNonSdkCredential(gameToken);
+                if (nonSdkCredential != null)
+                {
+                    TombstackLog.Error(
+                        "Init aborted: the token given to Tombstack is " + nonSdkCredential + ", not a per-game SDK token. "
+                        + "Remove it from your build, mint the game's SDK token (tmb_...) on its SDK tokens page or with Link this project in the Hub, and use that. NO telemetry is being sent.");
+                    return;
+                }
+                // Init reads main-thread-only Unity state (persistentDataPath, SystemInfo) and creates the
+                // host GameObject. Called from another thread (say, a Task continuation after fetching remote
+                // config) it used to latch _initialized, throw half-way and leave the SDK without a log hook
+                // or a host, with every later Init returning early. Refused before anything is set.
+                if (_mainThreadId != 0 && !onMainThread())
+                {
+                    TombstackLog.Error("Init must be called on the Unity main thread; this call was ignored and NO telemetry is being sent yet. Call Tombstack.Init again from the main thread (for example from Awake or Start).");
+                    return;
+                }
                 _gameToken = gameToken;
                 _endpoint = endpoint.TrimEnd('/');
                 // Retention count: the Init param carries it (auto-init passes the config value here), so a
@@ -718,7 +763,23 @@ namespace AnkleBreaker.Tombstack
                 // anonymous. Salted with the game token (same device → different id per game); the
                 // raw device identifier never goes on the wire. A pre-init SetUser(realId) wins —
                 // the provisional id is still computed so a later logout can revert to it.
-                var provisionalId = TombstackDeviceIdentity.Acquire(_gameToken);
+                // With consent still pending, nothing is read from or written to the device for it: a
+                // random in-memory stand-in is used, and the persistent id is derived when consent is
+                // granted (ResolveDeferredIdentity, main thread). Nothing is sent before consent. When
+                // consent is granted off the main thread, a payload captured before the host's next frame
+                // can still carry the stand-in.
+                _identityFilePath = TombstackDeviceIdentity.FilePath();
+                string provisionalId;
+                if (_consent)
+                {
+                    provisionalId = TombstackDeviceIdentity.Acquire(_identityFilePath, _gameToken);
+                    _identityDeferred = false;
+                }
+                else
+                {
+                    provisionalId = TombstackDeviceIdentity.MintEphemeral();
+                    _identityDeferred = true;
+                }
                 lock (_identityLock) { _provisionalUserId = provisionalId; }
                 if (string.IsNullOrEmpty(_userId)) _userId = provisionalId;
                 _sessionId = newId();
@@ -742,7 +803,13 @@ namespace AnkleBreaker.Tombstack
                 // previous run's log for next-launch upload and read its dirty-session marker.
                 // REPORTING from these only happens once capture is allowed (session tracking).
                 _hadPreviousLog = TombstackSessionLog.RotateForNewSession();
-                if (_detectUncleanShutdown) _previousMarker = TombstackSessionMarker.TakePrevious();
+                if (_detectUncleanShutdown)
+                {
+                    // TakePrevious deletes the file: an Init retried after a failed one must keep the
+                    // marker the first attempt already took.
+                    var taken = TombstackSessionMarker.TakePrevious();
+                    if (taken != null) _previousMarker = taken;
+                }
                 else TombstackSessionMarker.Delete(); // never leave a stale marker behind
 
                 // Threaded so exceptions on background threads are captured too.
@@ -753,6 +820,14 @@ namespace AnkleBreaker.Tombstack
                 Application.quitting += onQuitting;
 
                 TombstackBehaviour.Bootstrap(_endpoint, _gameToken, _sessionId, heartbeatIntervalSeconds, stateDir);
+                // A SetConsent(false) made before Init revoked consent before the offline queue, the session
+                // logs and the marker were located: purge them now, before anything is reported from them.
+                if (_purgeAtInit)
+                {
+                    _purgeAtInit = false;
+                    TombstackBehaviour.PurgeForRevokedConsent();
+                    purgeLocalStateForRevokedConsent();
+                }
                 // Both gates: the config toggle AND the runtime auto-breadcrumb switch (a
                 // pre-init SetCaptureEnabled(Breadcrumbs, false) must survive Init).
                 if (_autoSceneBreadcrumbs && _autoBreadcrumbs) hookSceneBreadcrumbs();
@@ -767,6 +842,40 @@ namespace AnkleBreaker.Tombstack
             catch (Exception e)
             {
                 TombstackLog.Warn($"Init failed: {e.Message}");
+                rollbackFailedInit();
+            }
+        }
+
+        /// <summary>
+        /// Init threw before the upload host existed: undo the latch and the hooks, so the SDK is not left
+        /// half-alive (reports queued into nothing, every later Init returning early) and a later Init can
+        /// try again. Once the host exists the SDK runs, and nothing is undone. Never throws.
+        /// </summary>
+        private static void rollbackFailedInit()
+        {
+            try
+            {
+                if (!_initialized || TombstackBehaviour.HasInstance) return;
+                Application.logMessageReceivedThreaded -= handleLog;
+                Application.quitting -= onQuitting;
+                unhookBackgroundExceptionSources();
+                unhookSceneBreadcrumbs();
+                TombstackAppHang.Stop(waitForExit: false);
+                // The identity this attempt assigned: a retry derives it again. Left in place, the retry
+                // would keep this attempt's id as the player (with consent pending a random stand-in that
+                // no later grant replaces). A player set with SetUser before Init is kept.
+                lock (_identityLock)
+                {
+                    if (string.Equals(_userId, _provisionalUserId, StringComparison.Ordinal)) _userId = null;
+                    _provisionalUserId = null;
+                }
+                _identityDeferred = false;
+                _identityFilePath = null;
+                _initialized = false;
+            }
+            catch
+            {
+                // Rollback is best-effort; it must never throw into game code.
             }
         }
 
@@ -1104,9 +1213,10 @@ namespace AnkleBreaker.Tombstack
         /// Toggle capture + upload (store-policy / GDPR consent). While false, nothing is
         /// recorded or sent — including heartbeats, breadcrumbs, and analytics events. Revoking
         /// (true → false) also discards everything captured but not yet delivered: the upload queue,
-        /// the event/metric buffers and the offline queue on disk. With RequireConsent, the previous
-        /// run's offline queue is not read or sent until consent is granted. To defer a decision
-        /// without discarding, leave consent at its RequireConsent default instead of passing false.
+        /// the event/metric buffers, the offline queue on disk, the session logs (current and retained)
+        /// and the session marker. With RequireConsent, the previous run's offline queue is not read or
+        /// sent until consent is granted. To defer a decision without discarding, leave consent at its
+        /// RequireConsent default instead of passing false.
         /// </summary>
         /// <param name="granted">True once the player has accepted telemetry.</param>
         public static void SetConsent(bool granted)
@@ -1119,20 +1229,116 @@ namespace AnkleBreaker.Tombstack
             try
             {
                 // Consent arriving after Init starts the deferred session tracking (marker
-                // write + unclean-shutdown report) exactly once.
-                if (granted && _initialized) startSessionTracking();
+                // write + unclean-shutdown report) exactly once, after deriving the persistent device
+                // id that waited for consent (main thread only; otherwise the host does it on its
+                // next frame, before any heartbeat).
+                if (granted && _initialized)
+                {
+                    if (onMainThread()) ResolveDeferredIdentity();
+                    startSessionTracking();
+                }
                 // Consent revoked: purge buffered breadcrumbs so the pre-revoke trail can't
                 // attach to a crash captured after consent is re-granted (GDPR scoping), and
-                // everything captured but not yet delivered (memory queues + the offline queue).
+                // everything captured but not yet delivered (memory queues + the offline queue),
+                // then what the SDK keeps on disk from the consented period.
                 else if (!granted && wasGranted)
                 {
                     clearBreadcrumbs();
                     TombstackBehaviour.PurgeForRevokedConsent();
+                    purgeLocalStateForRevokedConsent();
                 }
             }
             catch (Exception e)
             {
                 TombstackLog.Warn($"SetConsent follow-up failed: {e.Message}");
+            }
+        }
+
+        /// <summary>
+        /// Consent revoked: remove what the SDK keeps on the device from the consented period. The session
+        /// logs (the current one rides the next crash or bug report; retained ones are advertised for log
+        /// pulls), the session marker (if this session then died, the next consented launch would report
+        /// it with its log) and the previous session's not-yet-sent unclean-shutdown report. Session
+        /// tracking re-arms, so a later SetConsent(true) writes a fresh marker. Before Init these files are
+        /// not located yet: the purge is recorded and Init applies it. Any thread; never throws.
+        /// </summary>
+        private static void purgeLocalStateForRevokedConsent()
+        {
+            try
+            {
+                // Events and metrics tracked before Init and not replayed yet were captured before the revoke.
+                lock (_preInitLock) { _preInitTracks.Clear(); }
+                if (!_initialized)
+                {
+                    _purgeAtInit = true;
+                    return;
+                }
+                TombstackSessionLog.PurgeForRevokedConsent();
+                TombstackSessionMarker.Delete();
+                _previousMarker = null;
+                _hadPreviousLog = false;
+                lock (_sessionTrackingLock) { _sessionTrackingStarted = false; }
+                // The persisted device id goes too; the session falls back to a stand-in until consent
+                // returns, when ResolveDeferredIdentity derives it again.
+                TombstackDeviceIdentity.Forget(_identityFilePath);
+                adoptProvisionalId(TombstackDeviceIdentity.MintEphemeral(), dropPendingPrior: true);
+                _identityDeferred = true;
+            }
+            catch (Exception e)
+            {
+                TombstackLog.Warn($"consent purge failed: {e.Message}");
+            }
+        }
+
+        /// <summary>
+        /// Consent granted while the device identity waited for it (RequireConsent, or a revoke): derive
+        /// and persist the device id now and move this session onto it. MAIN THREAD ONLY (deriving the id
+        /// reads SystemInfo): called by SetConsent on the main thread, and by the upload host every frame
+        /// and before each heartbeat. One volatile read when there is nothing to do. Never throws.
+        /// </summary>
+        internal static void ResolveDeferredIdentity()
+        {
+            if (!_identityDeferred || !CaptureAllowed) return;
+            // Deriving reads SystemInfo. Off the main thread (SendHeartbeatNow misused from a worker) it
+            // could fail and persist a random id that wins on every later launch: leave it to the host.
+            if (_mainThreadId != 0 && !onMainThread()) return;
+            _identityDeferred = false;
+            try
+            {
+                adoptProvisionalId(TombstackDeviceIdentity.Acquire(_identityFilePath, _gameToken), dropPendingPrior: false);
+            }
+            catch (Exception e)
+            {
+                TombstackLog.Warn($"device identity failed: {e.Message}");
+            }
+        }
+
+        /// <summary>
+        /// Replace the provisional (device) id. A real <see cref="SetUser"/> id is kept; a session still
+        /// running under the previous provisional id moves to the new one. A pending merge marker naming
+        /// the previous id follows it, or is dropped when <paramref name="dropPendingPrior"/> (a revoke:
+        /// pre-revoke telemetry must not be merged into anyone afterwards). On a user change the metadata
+        /// baseline restarts, so the map is sent again under the new id. Any thread.
+        /// </summary>
+        private static void adoptProvisionalId(string next, bool dropPendingPrior)
+        {
+            if (string.IsNullOrEmpty(next)) return;
+            bool userChanged;
+            lock (_identityLock)
+            {
+                var previous = _provisionalUserId;
+                _provisionalUserId = next;
+                if (dropPendingPrior) _pendingPriorUserId = null;
+                else if (previous != null && string.Equals(_pendingPriorUserId, previous, StringComparison.Ordinal))
+                    _pendingPriorUserId = next;
+                userChanged = string.IsNullOrEmpty(_userId) || string.Equals(_userId, previous, StringComparison.Ordinal);
+                if (userChanged) _userId = next;
+            }
+            if (!userChanged) return;
+            lock (_userMetadataLock)
+            {
+                _lastSentUserMetadataJson = "{}";
+                _userMetadataEpoch++;
             }
         }
 
@@ -1276,6 +1482,9 @@ namespace AnkleBreaker.Tombstack
         {
             try
             {
+                // Noted before the consent check: a revoke from here on discards the report, also when
+                // its screenshot arrives at the end of the frame, after the revoke.
+                int consentEpoch = TombstackBehaviour.ConsentEpoch;
                 if (!CaptureAllowed || string.IsNullOrEmpty(message)) return;
                 var payload = new BugPayload
                 {
@@ -1314,13 +1523,14 @@ namespace AnkleBreaker.Tombstack
                             payload.screenshot = new ScreenshotMeta { size = shot.Value.Size, sha256 = shot.Value.Sha256 };
                             TombstackBehaviour.EnqueueWithScreenshot(
                                 BUG_REPORTS_PATH, JsonUtility.ToJson(payload), UploadDurability.WriteAhead,
-                                payload.log, shot.Value.Bytes);
+                                payload.log, shot.Value.Bytes, consentEpoch: consentEpoch);
                         }
                         else
                         {
                             payload.screenshot = new ScreenshotMeta();
                             TombstackBehaviour.Enqueue(
-                                BUG_REPORTS_PATH, JsonUtility.ToJson(payload), UploadDurability.WriteAhead, payload.log);
+                                BUG_REPORTS_PATH, JsonUtility.ToJson(payload), UploadDurability.WriteAhead, payload.log,
+                                consentEpoch: consentEpoch);
                         }
                     });
                 }
@@ -1328,7 +1538,8 @@ namespace AnkleBreaker.Tombstack
                 {
                     payload.screenshot = new ScreenshotMeta();
                     TombstackBehaviour.Enqueue(
-                        BUG_REPORTS_PATH, JsonUtility.ToJson(payload), UploadDurability.WriteAhead, payload.log);
+                        BUG_REPORTS_PATH, JsonUtility.ToJson(payload), UploadDurability.WriteAhead, payload.log,
+                        consentEpoch: consentEpoch);
                 }
             }
             catch (Exception e)
@@ -1649,6 +1860,26 @@ namespace AnkleBreaker.Tombstack
             }
         }
 
+        /// <summary>
+        /// The SDK's own round-trip sample (<c>tombstack.rtt_ms</c>, emitted by the upload host). Sampled and
+        /// consent-gated like any metric, but not charged to the per-session custom-row budget: the server
+        /// keeps these rows in a small pool of their own (src/lib/session-budget.ts), so charging them here
+        /// made the SDK drop the studio's own events near the limit that the server would have stored.
+        /// Never throws.
+        /// </summary>
+        internal static void TrackRoundTripMetric(string name, double meanMs)
+        {
+            try
+            {
+                if (!_initialized) return;
+                trackMetricAt(name, meanMs, "ms", nowIso(), applySampling: true, chargeBudget: false);
+            }
+            catch (Exception e)
+            {
+                TombstackLog.Warn($"round-trip metric failed: {e.Message}");
+            }
+        }
+
         /// <summary>Build + buffer one metric payload with an explicit timestamp (pre-init replay path).
         /// Returns true when the sample reached the batch buffer, false when it was gated out (no
         /// consent / not initialized / bad value / sampled away).</summary>
@@ -1915,6 +2146,12 @@ namespace AnkleBreaker.Tombstack
         private static void captureException(
             string condition, string stackTrace, string exceptionType = null, bool isFatal = false)
         {
+            // The consent period this crash is captured in: a revoke while its screenshot is encoded
+            // discards the report. Consent is checked again AFTER noting it (the callers' check came
+            // before): SetConsent clears consent before the purge bumps the epoch, so a revoke landing in
+            // between either fails this check or leaves the noted epoch the old one.
+            int consentEpoch = TombstackBehaviour.ConsentEpoch;
+            if (!CaptureAllowed) return;
             var now = monotonicSeconds();
             if (isDuplicateCrash(TombstackCrashThrottle.BuildKey(condition, stackTrace, exceptionType), condition, now))
                 return;
@@ -1957,7 +2194,9 @@ namespace AnkleBreaker.Tombstack
                 priorUserId = PeekPriorUserIdForHeartbeat(),
                 steamId = nullIfEmpty(_steamId),
                 breadcrumbs = snapshotBreadcrumbs(),
-                log = _uploadLogs,
+                // The session log (up to 512 KB) rides at most one non-fatal report per interval
+                // (TombstackCrashThrottle.TryClaimLogUpload); a fatal crash always carries it.
+                log = _uploadLogs && (isFatal || TombstackCrashThrottle.TryClaimLogUpload(now)),
                 role = _role,
                 serverId = _serverId,
                 matchId = _matchId,
@@ -1982,11 +2221,11 @@ namespace AnkleBreaker.Tombstack
             }
             if (frame.HasValue)
             {
-                TombstackScreenshot.EncodeAsync(frame.Value, shot => enqueueCrash(payload, shot, isFatal));
+                TombstackScreenshot.EncodeAsync(frame.Value, shot => enqueueCrash(payload, shot, isFatal, consentEpoch));
             }
             else
             {
-                enqueueCrash(payload, null, isFatal);
+                enqueueCrash(payload, null, isFatal, consentEpoch);
             }
             raiseTelemetry("crash", payload.stackHint);
             // Final flush in the crash path: the on-disk log must include this crash even if
@@ -2003,8 +2242,9 @@ namespace AnkleBreaker.Tombstack
 
         /// <summary>Enqueue a crash write-ahead, with its screenshot when one was encoded. `fatal` is
         /// persisted with the record: only a crash that ended the process may stand in for its
-        /// session's unclean-shutdown report on the next launch. Any thread; never throws.</summary>
-        private static void enqueueCrash(CrashPayload payload, TombstackScreenshot.Shot? shot, bool isFatal)
+        /// session's unclean-shutdown report on the next launch. <paramref name="consentEpoch"/> is the
+        /// consent period it was captured in (a revoke since then discards it). Any thread; never throws.</summary>
+        private static void enqueueCrash(CrashPayload payload, TombstackScreenshot.Shot? shot, bool isFatal, int consentEpoch)
         {
             try
             {
@@ -2013,13 +2253,13 @@ namespace AnkleBreaker.Tombstack
                     payload.screenshot = new ScreenshotMeta { size = shot.Value.Size, sha256 = shot.Value.Sha256 };
                     TombstackBehaviour.EnqueueWithScreenshot(
                         CRASHES_PATH, JsonUtility.ToJson(payload), UploadDurability.WriteAhead, payload.log,
-                        shot.Value.Bytes, fatal: isFatal);
+                        shot.Value.Bytes, fatal: isFatal, consentEpoch: consentEpoch);
                 }
                 else
                 {
                     TombstackBehaviour.Enqueue(
                         CRASHES_PATH, JsonUtility.ToJson(payload), UploadDurability.WriteAhead, payload.log,
-                        fatal: isFatal);
+                        fatal: isFatal, consentEpoch: consentEpoch);
                 }
             }
             catch (Exception e)
@@ -2179,10 +2419,17 @@ namespace AnkleBreaker.Tombstack
             _previousMarker = null;
             if (previous == null) return;
             // Deferred until the offline spool has been read (off the main thread since M7): whether a
-            // restored FATAL managed crash already represents this death is only known then.
+            // restored FATAL managed crash already represents this death is only known then. A revoke in
+            // the meantime moves the consent epoch: the report then belongs to the revoked period and is
+            // never sent, even after a re-grant.
+            int epoch = TombstackBehaviour.ConsentEpoch;
             TombstackBehaviour.RunAfterQueueLoaded(() =>
             {
-                try { reportUncleanShutdown(previous); }
+                try
+                {
+                    if (epoch != TombstackBehaviour.ConsentEpoch) return;
+                    reportUncleanShutdown(previous);
+                }
                 catch (Exception e) { TombstackLog.Warn($"unclean-shutdown report failed: {e.Message}"); }
             });
         }

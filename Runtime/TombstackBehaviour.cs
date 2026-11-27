@@ -54,6 +54,20 @@ namespace AnkleBreaker.Tombstack
         // the spool is full a crash/bug report evicts the OLDEST analytics file (counted as a drop);
         // analytics never evicts anything. It used to be one 64-file pool shared first-come.
         private const int MAX_PERSISTED_ANALYTICS_FILES = 32;
+        // Crash and bug reports held while the studio's spending cap refuses everything (TombstackSpendCap).
+        // Only reports with an offline-queue file are held, so the queue's own size is the bound.
+        private const int MAX_CAP_HELD = MAX_PERSISTED_FILES;
+        // A record kept for a later launch (TombstackHttp.ClassifyFailure: a refused token, the spending
+        // cap, a proxy's 403, a wrong path's 404) waits for its cause to be fixed. A cause that never
+        // clears would hold it, and in time the whole spool, forever, leaving new crashes with no copy on
+        // disk. Past this age (the file's write time; records are never rewritten) a record is dropped
+        // when restored, counted as rejected. 90 days outlasts a spending-cap pause, which ends with the
+        // billing month. Judged by the device clock, the only one known at launch: a clock set months
+        // ahead drops records early (counted, so the studio sees it), one set behind keeps them longer.
+        private const int MAX_SPOOL_RECORD_AGE_DAYS = 90;
+        // A file time before this year is no write time at all (a platform that reports none, a clock
+        // reset to its epoch, a file that vanished and reads as 1601): such a record never expires by age.
+        private const int SPOOL_TIME_FLOOR_YEAR = 2024;
         // Absolute cap on crash/bug (write-ahead) items held in memory. Those items are preserved by
         // the soft-cap eviction below, so without this an exception storm grew the queue without bound.
         // Past it an item stays on disk only and goes out on the next launch.
@@ -72,7 +86,11 @@ namespace AnkleBreaker.Tombstack
         // minute of headroom for scheduling jitter and upload latency.
         // tests/heartbeat-cadence.test.ts reads this constant and fails if the two ever drift apart.
         private const float MAX_HEARTBEAT_INTERVAL_SECONDS = 240f;
-        private const long HTTP_REQUEST_TIMEOUT = 408;
+        // While the heartbeat gate is closed (the session not started yet, consent pending, heartbeats off)
+        // the loop looks again after this long instead of a whole interval: the loop starts before Init calls
+        // StartSession, so the first beat used to leave one full interval (60 s by default) after Init, and a
+        // session that ended or crashed within that time was never seen.
+        private const float HEARTBEAT_GATE_POLL_SECONDS = 1f;
         private const long HTTP_TOO_MANY_REQUESTS = 429;
         private const string HEARTBEATS_PATH = "/api/v1/ingest/heartbeats";
         private const string PULL_REQUESTS_PATH = "/api/v1/pull-requests";
@@ -89,12 +107,20 @@ namespace AnkleBreaker.Tombstack
         /// in players' hands sends nothing, and the server must keep accepting those.</summary>
         private const string CLIENT_HEADER = "X-Tombstack-Client";
         /// <summary>This package's version. MUST equal <c>unity/package.json</c>'s "version" -
-        /// tests/unity-client-header.test.ts reads both and fails the suite if they drift, because a
+        /// tests/client-version.test.ts reads both and fails the suite if they drift, because a
         /// version string that lies is worse than no version string at all.</summary>
-        private const string SDK_VERSION = "0.21.8";
+        private const string SDK_VERSION = "0.21.9";
         private const string CLIENT_HEADER_VALUE = "unity/" + SDK_VERSION;
-        // §K1: name of the auto round-trip metric emitted after each successful ingest POST.
+        // §K1: name of the auto round-trip metric, measured on each successful ingest POST.
         private const string RTT_METRIC_NAME = "tombstack.rtt_ms";
+        // §K1: at most one tombstack.rtt_ms row per interval, carrying the mean of the round trips measured
+        // since the previous row. It used to be one row per upload, heartbeats and batches included: about
+        // 60 rows per 30 minutes, the whole free-plan per-session budget, so the studio's own events were
+        // the ones refused. The server now keeps 3 of these rows per session per fixed 30-minute window
+        // (counted on arrival, apart from the custom rows); a row can wait up to BATCH_FLUSH_AGE_SECONDS in
+        // its batch, so at 600 s four could arrive in one window and the fourth was refused. At 900 s at
+        // most three can. tests/unity-rtt-metric.test.ts holds this to the server's pool.
+        private const double RTT_METRIC_INTERVAL_SECONDS = 900.0;
 
         /// <summary>Keep capacity within the server item cap: small items may still fit in one envelope.</summary>
         private const int BATCH_CAPACITY = 256;
@@ -172,9 +198,35 @@ namespace AnkleBreaker.Tombstack
         private static volatile int _parkedCount;
         private static double _parkRetryAt;
         private static float _parkDelaySeconds = PARK_BASE_DELAY_SECONDS;
+        // Spending cap (TombstackSpendCap): the server refuses everything until the period resumes or the
+        // studio raises the cap. Crash and bug reports wait here, backed by their queue files, and go out at
+        // the resume time or as soon as one of our requests is accepted again. The list is guarded by
+        // _parkLock (a consent revoke may clear it from any thread); the schedule is main-thread only.
+        private static readonly List<PendingUpload> _capHeld = new List<PendingUpload>(MAX_CAP_HELD);
+        private static double _capReleaseAt; // monotonic seconds; 0 = no hold
+        private static bool _capWarned;
+        // This client's share of the release spread, drawn once per hold (main thread).
+        private static double _capSpreadShare;
         // Backoff jitter. System.Random, never UnityEngine.Random: the game's own random sequence must
         // not move because an upload failed. Main thread only.
         private static readonly System.Random _jitterRng = new System.Random();
+        // §K1 round-trip aggregate (see RTT_METRIC_INTERVAL_SECONDS). Main thread only: send() runs there.
+        // NegativeInfinity: the first measured upload of a launch emits at once.
+        private static double _rttLastEmitAt = double.NegativeInfinity;
+        private static int _rttSamples;
+        private static double _rttSumMs;
+        // Last status warnKeptOnce logged, so a spool of reports refused with the same status logs one
+        // line, not one per report. Main thread only.
+        private static long _keptWarnedStatus;
+        // At most this many pending reports keep their screenshot in memory (the PNG is never written to
+        // the offline queue). Offline, every admitted crash used to keep its 1-3 MB PNG until delivered:
+        // 64 queued plus 64 parked reports could hold hundreds of MB on a phone. An older report keeps its
+        // text and ships without the image, as a report restored from disk already does.
+        private const int MAX_SCREENSHOTS_IN_MEMORY = 2;
+        // Reports that were given screenshot bytes, oldest first (some may have released them since).
+        // Guarded by _screenshotLock: reports are enqueued from the thread pool as well as the main thread.
+        private static readonly Queue<PendingUpload> _screenshotHolders = new Queue<PendingUpload>(MAX_SCREENSHOTS_IN_MEMORY + 1);
+        private static readonly object _screenshotLock = new object();
 
         private string _endpoint;
         private string _gameToken;
@@ -228,17 +280,28 @@ namespace AnkleBreaker.Tombstack
             _queueLoadStarted = false;
             _held.Clear();
             _quitting = false;
-            lock (_parkLock) { _parked.Clear(); _parkedCount = 0; }
+            lock (_parkLock) { _parked.Clear(); _parkedCount = 0; _capHeld.Clear(); }
             _parkRetryAt = 0;
             _parkDelaySeconds = PARK_BASE_DELAY_SECONDS;
+            _capReleaseAt = 0;
+            _capWarned = false;
             lock (_restoredFatalSessions) { _restoredFatalSessions.Clear(); }
             lock (_claimedPastLogs) { _claimedPastLogs.Clear(); }
             _currentSessionId = null;
             _lastFlushAtSeconds = 0;
+            _rttLastEmitAt = double.NegativeInfinity;
+            _rttSamples = 0;
+            _rttSumMs = 0;
+            _keptWarnedStatus = 0;
+            lock (_screenshotLock) { _screenshotHolders.Clear(); }
         }
 
         /// <summary>§K3: count of payloads waiting in the in-memory outbound queue.</summary>
         internal static int OutboundCount => _outbound.Count;
+
+        /// <summary>The current consent epoch (bumped by every revoke). Work scheduled under an older
+        /// epoch belongs to a revoked consent period and must not send anything. Any thread.</summary>
+        internal static int ConsentEpoch => Volatile.Read(ref _consentEpoch);
 
         /// <summary>§K3: count of write-ahead payloads persisted to the offline sidecar directory.</summary>
         internal static int PersistedCount => _persistedCount;
@@ -333,12 +396,17 @@ namespace AnkleBreaker.Tombstack
         /// <param name="logSessionId">The session whose log this report carries, persisted with it so a
         /// later launch uploads THAT session's retained log. Null ⇒ the target, else the current
         /// session (null for a most-recent-prior upload with no known id).</param>
+        /// <param name="consentEpoch">The <see cref="ConsentEpoch"/> the report was captured under. A
+        /// revoke since then discards it: nothing captured before a revoke is queued or written to disk.
+        /// Null ⇒ captured now.</param>
         internal static void Enqueue(
             string path, string json, UploadDurability durability,
             bool requestLog = false, bool logFromPreviousSession = false, string targetSessionId = null,
-            bool fatal = false, string logSessionId = null)
+            bool fatal = false, string logSessionId = null, int? consentEpoch = null)
         {
+            if (isStaleCapture(consentEpoch)) return;
             var item = PendingUpload.Post(path, json, durability, null, requestLog, logFromPreviousSession);
+            if (consentEpoch.HasValue) item.ConsentEpoch = consentEpoch.Value;
             item.TargetSessionId = targetSessionId;
             item.Fatal = fatal;
             item.LogSessionId = logSessionId ?? targetSessionId ?? (logFromPreviousSession ? null : _currentSessionId);
@@ -359,21 +427,64 @@ namespace AnkleBreaker.Tombstack
 
         /// <summary>Like <see cref="Enqueue"/> but carries captured screenshot bytes: on the 2xx the
         /// response's screenshotUpload presign is chased and the PNG is PUT. Best-effort — the bytes
-        /// are NOT persisted with the write-ahead record (a screenshot lost to a restart is fine).</summary>
+        /// are NOT persisted with the write-ahead record (a screenshot lost to a restart is fine).
+        /// <paramref name="consentEpoch"/> as for <see cref="Enqueue"/>: the screenshot arrives after
+        /// the report was built (end of frame, or an encode on the thread pool), and a revoke in
+        /// between discards both.</summary>
         internal static void EnqueueWithScreenshot(
             string path, string json, UploadDurability durability, bool requestLog, byte[] screenshotBytes,
-            bool fatal = false)
+            bool fatal = false, int? consentEpoch = null)
         {
+            if (isStaleCapture(consentEpoch)) return;
             var item = PendingUpload.Post(path, json, durability, null, requestLog, false);
+            if (consentEpoch.HasValue) item.ConsentEpoch = consentEpoch.Value;
             item.Fatal = fatal;
             item.LogSessionId = _currentSessionId;
             if (screenshotBytes != null && screenshotBytes.Length > 0)
             {
                 item.RequestedScreenshot = true;
                 item.ScreenshotBytes = screenshotBytes;
+                holdScreenshot(item);
+                // A revoke that landed since the stale check has already released the holders (the purge
+                // bumps the epoch first): this report is discarded anyway, and its PNG goes now.
+                if (item.ConsentEpoch != Volatile.Read(ref _consentEpoch))
+                {
+                    lock (_screenshotLock) { releaseScreenshot(item); }
+                    return;
+                }
             }
             if (durability == UploadDurability.WriteAhead) persist(item);
             enqueueOutbound(item);
+        }
+
+        /// <summary>Register a report that holds screenshot bytes, and release the bytes of the oldest
+        /// holders past <see cref="MAX_SCREENSHOTS_IN_MEMORY"/>: those reports ship without the image.
+        /// Any thread.</summary>
+        private static void holdScreenshot(PendingUpload item)
+        {
+            lock (_screenshotLock)
+            {
+                _screenshotHolders.Enqueue(item);
+                while (_screenshotHolders.Count > MAX_SCREENSHOTS_IN_MEMORY) releaseScreenshot(_screenshotHolders.Dequeue());
+            }
+        }
+
+        /// <summary>Consent revoked: every held screenshot was captured before it and can never be sent,
+        /// so none stays in memory. Any thread.</summary>
+        private static void releaseHeldScreenshots()
+        {
+            lock (_screenshotLock)
+            {
+                while (_screenshotHolders.Count > 0) releaseScreenshot(_screenshotHolders.Dequeue());
+            }
+        }
+
+        /// <summary>The report ships without its image, as one restored from disk does. Caller holds
+        /// <see cref="_screenshotLock"/>.</summary>
+        private static void releaseScreenshot(PendingUpload holder)
+        {
+            holder.RequestedScreenshot = false;
+            holder.ScreenshotBytes = null;
         }
 
         /// <summary>
@@ -437,6 +548,11 @@ namespace AnkleBreaker.Tombstack
         private static bool isConsentExempt(PendingUpload item) =>
             !item.IsLogPut && item.Path == PULL_REQUESTS_PATH;
 
+        /// <summary>True when a report captured under <paramref name="consentEpoch"/> belongs to a consent
+        /// period that has since been revoked. Null (captured now) is never stale.</summary>
+        private static bool isStaleCapture(int? consentEpoch) =>
+            consentEpoch.HasValue && consentEpoch.Value != Volatile.Read(ref _consentEpoch);
+
         /// <summary>True when <paramref name="item"/> may go on the wire: consent is granted now AND was
         /// not revoked since the item was captured. Cheap: two volatile reads and an int compare.</summary>
         private static bool mayUpload(PendingUpload item) =>
@@ -446,7 +562,8 @@ namespace AnkleBreaker.Tombstack
         /// <summary>
         /// Consent revoked (<see cref="Tombstack.SetConsent"/>(false) after it was granted): nothing
         /// captured before the revoke may leave the device, now or after a later re-grant. Empties the
-        /// outbound queue and both batch buffers, deletes the offline queue's files, and stamps a new
+        /// outbound queue and both batch buffers, lets go of the screenshots held in memory for pending
+        /// reports, deletes the offline queue's files, and stamps a new
         /// consent epoch so an item still in flight or waiting out a retry is discarded instead of
         /// re-sent. Log-pull requests (server actions) are kept. Any thread; never throws.
         /// </summary>
@@ -470,7 +587,8 @@ namespace AnkleBreaker.Tombstack
                 }
                 _eventBatch.Clear();
                 _metricBatch.Clear();
-                lock (_parkLock) { _parked.Clear(); _parkedCount = 0; }
+                lock (_parkLock) { _parked.Clear(); _parkedCount = 0; _capHeld.Clear(); }
+                releaseHeldScreenshots();
                 lock (_persistLock)
                 {
                     _spoolGeneration++;
@@ -545,6 +663,9 @@ namespace AnkleBreaker.Tombstack
                 // 0.12: the sampler is gated (config CollectFrameStats / SetCaptureEnabled(FrameStats)).
                 if (Tombstack.FrameStatsEnabled) TombstackFrameStats.Sample(Time.unscaledDeltaTime);
                 TombstackAppHang.Pump();
+                // The persistent device id waits for consent and needs the main thread (one volatile read
+                // when there is nothing to do).
+                Tombstack.ResolveDeferredIdentity();
                 // Work deferred until the previous run's spool was read (the unclean-shutdown report).
                 // Empty-queue check is one volatile read + one TryDequeue: allocation-free when idle.
                 while (_queueLoaded && _afterQueueLoaded.TryDequeue(out var deferred)) deferred();
@@ -554,6 +675,9 @@ namespace AnkleBreaker.Tombstack
                 {
                     // No consent, or captured before a revoke: discard instead of sending.
                     if (!mayUpload(item)) { deletePersisted(item); continue; }
+                    // The spending cap refuses everything until it lifts: a stored crash or bug report waits
+                    // with the held ones instead of being sent to be refused again.
+                    if (_capReleaseAt > 0 && isCapHoldable(item)) { holdForCap(item); continue; }
                     StartCoroutine(send(item));
                 }
                 // Age-trigger flush so low-volume games still report within FlushAgeSeconds. Cheap locked
@@ -563,6 +687,8 @@ namespace AnkleBreaker.Tombstack
                 if (_metricBatch.ShouldFlushByAge(m)) flushOne(_metricBatch, METRICS_BATCH_PATH);
                 // Periodic resend of parked payloads (one volatile read when nothing is parked).
                 if (_parkedCount > 0) pumpParked(m);
+                // The spending cap's resume time has come: the held reports go out (one read otherwise).
+                if (_capReleaseAt > 0 && m >= _capReleaseAt) releaseCapHeld();
                 if (Time.unscaledTime >= _nextLogFlushAt)
                 {
                     _nextLogFlushAt = Time.unscaledTime + LOG_FLUSH_INTERVAL_SECONDS;
@@ -719,7 +845,7 @@ namespace AnkleBreaker.Tombstack
             if (files.Length == 0) { _queueLoaded = true; return; }
             try
             {
-                ThreadPool.QueueUserWorkItem(_ => readPersistedFiles(files, epoch));
+                TombstackPlatform.RunInBackground(_ => readPersistedFiles(files, epoch));
             }
             catch (Exception e)
             {
@@ -752,6 +878,14 @@ namespace AnkleBreaker.Tombstack
         {
             try
             {
+                // No launch delivered it for MAX_SPOOL_RECORD_AGE_DAYS: let it go (counted) so a refusal
+                // that never clears cannot fill the spool.
+                if (isExpiredSpoolRecord(file))
+                {
+                    forgetPersistedFile(file);
+                    TombstackDrops.Record(DropReason.Rejected);
+                    return;
+                }
                 // An I/O failure leaves the file for the next launch; an unparseable one is forgotten.
                 var text = File.ReadAllText(file);
                 PersistedRecord record;
@@ -817,6 +951,21 @@ namespace AnkleBreaker.Tombstack
             catch { return string.CompareOrdinal(a, b); }
         }
 
+        /// <summary>True when a spool record was written more than <see cref="MAX_SPOOL_RECORD_AGE_DAYS"/>
+        /// ago. Only a past write time counts: a record that looks written in the future (the clock is
+        /// behind now, or was ahead then) is kept, as is one whose time is before
+        /// <see cref="SPOOL_TIME_FLOOR_YEAR"/>. False when the time cannot be read. Never throws.</summary>
+        private static bool isExpiredSpoolRecord(string file)
+        {
+            try
+            {
+                var written = File.GetLastWriteTimeUtc(file);
+                if (written.Year < SPOOL_TIME_FLOOR_YEAR) return false;
+                return DateTime.UtcNow - written > TimeSpan.FromDays(MAX_SPOOL_RECORD_AGE_DAYS);
+            }
+            catch { return false; }
+        }
+
         /// <summary>Delete a spool file that is not backed by any live item (unreadable record).</summary>
         private static void forgetPersistedFile(string file)
         {
@@ -837,8 +986,9 @@ namespace AnkleBreaker.Tombstack
             while (true)
             {
                 // Consent-gated like every other capture; resumes when SetConsent(true) is called.
-                // 0.12: also gated by SendHeartbeats / SetCaptureEnabled(Heartbeats) — checked every
-                // interval so a runtime flip pauses/resumes the loop on its next tick.
+                // 0.12: also gated by SendHeartbeats / SetCaptureEnabled(Heartbeats) — checked on every
+                // tick (each interval while beating, each HEARTBEAT_GATE_POLL_SECONDS while closed), so a
+                // runtime flip pauses or resumes the loop on its next tick.
                 if (Tombstack.CaptureAllowed && Tombstack.HeartbeatsEnabled && Tombstack.CollectingStarted)
                 {
                     var json = buildHeartbeatJson(
@@ -860,13 +1010,19 @@ namespace AnkleBreaker.Tombstack
                         beat.PendingPriorUserId = pendingPriorUserId;
                         yield return send(beat);
                     }
+                    // Realtime, not WaitForSeconds: a pause menu sets Time.timeScale = 0, which would freeze
+                    // this loop and drop the player out of the server's 300s session window while they are
+                    // still there — understating the peak CCU the studio is billed on. Constructed per
+                    // iteration because WaitForSecondsRealtime latches its deadline at construction; cached
+                    // above the loop, every yield after the first returns instantly.
+                    yield return new WaitForSecondsRealtime(_heartbeatIntervalSeconds);
                 }
-                // Realtime, not WaitForSeconds: a pause menu sets Time.timeScale = 0, which would freeze
-                // this loop and drop the player out of the server's 300s session window while they are
-                // still there — understating the peak CCU the studio is billed on. Constructed per
-                // iteration because WaitForSecondsRealtime latches its deadline at construction; cached
-                // above the loop, every yield after the first returns instantly.
-                yield return new WaitForSecondsRealtime(_heartbeatIntervalSeconds);
+                else
+                {
+                    // Gate closed: look again shortly, so the first beat leaves within a second of
+                    // StartSession or SetConsent(true) (a SetUser made in the same frame still lands first).
+                    yield return new WaitForSecondsRealtime(HEARTBEAT_GATE_POLL_SECONDS);
+                }
             }
         }
 
@@ -938,6 +1094,8 @@ namespace AnkleBreaker.Tombstack
             pendingPriorUserId = null;
             try
             {
+                // Consent may have arrived since the last frame: never beat under the stand-in id.
+                Tombstack.ResolveDeferredIdentity();
                 var hb = new HeartbeatPayload
                 {
                     sessionId = _sessionId,
@@ -1079,11 +1237,19 @@ namespace AnkleBreaker.Tombstack
             => path != null && path.StartsWith(PULL_REQUESTS_PATH, StringComparison.Ordinal)
                && path.EndsWith("/fulfill", StringComparison.Ordinal);
 
+        /// <summary>True for the routes the spending cap refuses (the ingest routes and the log-pull fulfil,
+        /// src/lib/spend-cap-gate.ts callers): only their 2xx shows the cap has lifted. Creating a log pull
+        /// is not gated and answers 2xx at the cap.</summary>
+        private static bool isCapGatedPath(string path) => isIngestPath(path) || isFulfilPath(path);
+
         /// <summary>
-        /// §K1: after a successful ingest POST, emit the round-trip time as a <c>tombstack.rtt_ms</c>
-        /// metric via the normal TrackMetric batch path. Opt-in via <see cref="Tombstack.AutoRttMetricEnabled"/>
-        /// (default ON). Recursion guard: the metrics:batch send is skipped, so emitting the RTT metric
-        /// can never trigger measuring the RTT metric's own batch. Fail-silent.
+        /// §K1: after a successful ingest POST, add its round-trip time to the aggregate, and at most once
+        /// per <see cref="RTT_METRIC_INTERVAL_SECONDS"/> emit the mean as a <c>tombstack.rtt_ms</c> metric
+        /// via the metric batch (sampled and consent-gated like any metric, but not charged to the session
+        /// budget: the server keeps these rows apart). On by default via
+        /// <see cref="Tombstack.AutoRttMetricEnabled"/>. Recursion guard: the
+        /// metrics:batch send is skipped, so emitting the RTT metric can never trigger measuring the RTT
+        /// metric's own batch. Main thread (called from send()). Fail-silent.
         /// </summary>
         private void maybeEmitRtt(PendingUpload item, bool success, long startTicks)
         {
@@ -1094,7 +1260,15 @@ namespace AnkleBreaker.Tombstack
                 if (item.Path == METRICS_BATCH_PATH) return; // gate: don't measure the RTT metric's own batch
                 double ms = (System.Diagnostics.Stopwatch.GetTimestamp() - startTicks) * 1000.0
                             / System.Diagnostics.Stopwatch.Frequency;
-                Tombstack.TrackMetric(RTT_METRIC_NAME, ms, "ms");
+                _rttSamples++;
+                _rttSumMs += ms;
+                double now = monotonic();
+                if (now - _rttLastEmitAt < RTT_METRIC_INTERVAL_SECONDS) return;
+                double meanMs = _rttSumMs / _rttSamples;
+                _rttLastEmitAt = now;
+                _rttSamples = 0;
+                _rttSumMs = 0;
+                Tombstack.TrackRoundTripMetric(RTT_METRIC_NAME, meanMs);
             }
             catch (System.Exception e) { TombstackLog.Warn("rtt metric failed: " + e.Message); }
         }
@@ -1191,9 +1365,10 @@ namespace AnkleBreaker.Tombstack
             }
         }
 
-        /// <summary>Success → clean up (and chase a granted log presign); 4xx → drop poison
-        /// payload; otherwise back off and retry. Log PUTs reuse the same backoff but are never
-        /// persisted — a presigned URL is dead by the next launch anyway.</summary>
+        /// <summary>Success → clean up (and chase a granted log presign); a failure goes through
+        /// <see cref="TombstackHttp.ClassifyFailure"/>: drop an invalid (or non-durable refused) payload,
+        /// keep a durable report on disk for a later launch, otherwise back off and retry. Log PUTs reuse
+        /// the same backoff but are never persisted — a presigned URL is dead by the next launch anyway.</summary>
         private void handleResult(PendingUpload item, UnityWebRequest req)
         {
             try
@@ -1201,7 +1376,7 @@ namespace AnkleBreaker.Tombstack
                 if (req.result == UnityWebRequest.Result.Success)
                 {
                     deletePersisted(item);
-                    if (!item.IsLogPut) onEndpointReachable();
+                    if (!item.IsLogPut) onEndpointReachable(isCapGatedPath(item.Path));
                     // Consent revoked while this was in flight: no follow-up upload of the player's log
                     // or screenshot. (A heartbeat ack below stays harmless: its pulls re-check consent.)
                     if (!mayUpload(item)) return;
@@ -1230,31 +1405,42 @@ namespace AnkleBreaker.Tombstack
                 if (!mayUpload(item)) { deletePersisted(item); return; }
 
                 long code = req.responseCode;
-                // H1: a 401 is NOT automatically poison. invalid_signature (and a bare 401) is almost
-                // always a device clock more than 300s off; the Date header of this very reply has
-                // already corrected the signing clock (send()), so a retry succeeds. It used to be
-                // treated as poison, which DELETED the spooled crash report of every player whose
-                // clock was wrong. invalid_api_key is a real credential failure: analytics drop as
-                // before, but a crash/bug report is never deleted over it.
-                var unauthorized = item.IsLogPut
-                    ? UnauthorizedKind.None
-                    : TombstackHttp.ClassifyUnauthorized(code, req.downloadHandler != null ? req.downloadHandler.text : null);
-                if (unauthorized == UnauthorizedKind.Key && item.Durability == UploadDurability.WriteAhead)
+                string body = req.downloadHandler != null ? req.downloadHandler.text : null;
+                // A 4xx is not poison by itself (TombstackHttp.ClassifyFailure). A signing-clock 401
+                // (invalid_signature, or a bare 401) is retried: the Date header of this very reply has
+                // already corrected the signing clock (send()). A DURABLE report — a write-ahead item to an
+                // ingest path: crash, bug report, pause/quit batch, a restored record — exists only on this
+                // device and is deleted only when the server says its payload is invalid (400/413/422). A
+                // refused token, a 403 from a proxy or a 404 from a wrong path keep it on disk for a later
+                // launch; it used to be deleted on all of them but invalid_api_key. The spending cap (402)
+                // is handled below. Anything else refused (analytics, a pull request, an expired presign)
+                // is dropped as before.
+                bool durable = item.Durability == UploadDurability.WriteAhead && isIngestPath(item.Path);
+                var action = TombstackHttp.ClassifyFailure(code, body, durable, !item.IsLogPut);
+                if (action == FailureAction.HoldForSpendCap)
+                {
+                    startCapHold(body);
+                    if (isCapHoldable(item)) { holdForCap(item); return; }
+                    // Everything else the cap refused is not stored by the server and is not sent again, as
+                    // the cap promises: events refused at the cap must not land in the next period's bill.
+                    TombstackDrops.Record(DropReason.Rejected);
+                    deletePersisted(item);
+                    return;
+                }
+                if (action == FailureAction.KeepForNextLaunch)
                 {
                     // Retrying this session cannot help; the record stays on disk and is tried once per
-                    // launch, so a restored or re-minted key still delivers it.
-                    TombstackLog.Warn($"the SDK token was refused (HTTP 401) for {item.Path}; the report stays on disk for the next launch.");
+                    // launch, so a restored key or a fixed endpoint still delivers it. A record no launch
+                    // delivers is let go after MAX_SPOOL_RECORD_AGE_DAYS (restorePersisted).
+                    warnKeptOnce(code, item.Path);
                     // Only an item whose spool write failed has nowhere to wait — that one is lost.
                     if (string.IsNullOrEmpty(item.FilePath)) TombstackDrops.Record(DropReason.Rejected);
                     return;
                 }
-                bool poison = code >= 400 && code < 500
-                              && code != HTTP_REQUEST_TIMEOUT && code != HTTP_TOO_MANY_REQUESTS
-                              && unauthorized != UnauthorizedKind.Signature;
-                if (poison)
+                if (action == FailureAction.Drop)
                 {
-                    // Rejected by validation/auth (or an expired presign) — retrying forever
-                    // would just burn quota.
+                    // Rejected as invalid (or a non-durable payload refused, or an expired presign) —
+                    // retrying forever would just burn quota.
                     TombstackLog.Warn($"payload rejected with HTTP {code}; dropping ({(item.IsLogPut ? "log upload" : item.Path)}).");
                     TombstackDrops.Record(DropReason.Rejected);
                     deletePersisted(item);
@@ -1293,6 +1479,17 @@ namespace AnkleBreaker.Tombstack
             }
         }
 
+        /// <summary>One console line per refusal status: a durable report was refused for a reason the
+        /// studio can fix and stays on disk for a later launch. Main thread.</summary>
+        private static void warnKeptOnce(long code, string path)
+        {
+            if (_keptWarnedStatus == code) return;
+            _keptWarnedStatus = code;
+            TombstackLog.Warn(code == TombstackHttp.HTTP_UNAUTHORIZED
+                ? $"the SDK token was refused (HTTP 401) for {path}; crash and bug reports stay on disk for the next launch."
+                : $"the server refused {path} with HTTP {code}; crash and bug reports stay on disk and are sent again on a later launch.");
+        }
+
         /// <summary>
         /// A crash/bug report that asked for a log upload got its 2xx — parse the presign and
         /// queue the PUT. The file read (≤512 KB) happens on the thread pool, never the main
@@ -1324,7 +1521,7 @@ namespace AnkleBreaker.Tombstack
                 // session's log; a most-recent-prior (unclean-shutdown) upload reads the previous log;
                 // otherwise the current session's log.
                 int consentEpoch = item.ConsentEpoch; // the log is scoped to its report's consent
-                ThreadPool.QueueUserWorkItem(_ =>
+                TombstackPlatform.RunInBackground(_ =>
                 {
                     try
                     {
@@ -1369,14 +1566,18 @@ namespace AnkleBreaker.Tombstack
         {
             try
             {
-                if (item.ScreenshotBytes == null || item.ScreenshotBytes.Length == 0) return;
+                // Read once: holdScreenshot may release the bytes from another thread.
+                var bytes = item.ScreenshotBytes;
+                if (bytes == null || bytes.Length == 0) return;
                 if (string.IsNullOrEmpty(responseText)) return;
                 var response = JsonUtility.FromJson<IngestResponse>(responseText);
                 var target = response != null && response.data != null ? response.data.screenshotUpload : null;
                 // JsonUtility default-constructs absent nested objects — the url is the only reliable signal.
                 if (target == null || string.IsNullOrEmpty(target.url)) return;
-                var put = PendingUpload.ScreenshotPut(target.url, item.ScreenshotBytes, target.formFields);
+                var put = PendingUpload.ScreenshotPut(target.url, bytes, target.formFields);
                 put.ConsentEpoch = item.ConsentEpoch; // scoped to its report's consent
+                // The upload holds the PNG now; the delivered report must not keep a second reference.
+                item.ScreenshotBytes = null;
                 enqueueOutbound(put);
             }
             catch (Exception e)
@@ -1538,10 +1739,70 @@ namespace AnkleBreaker.Tombstack
             }
         }
 
-        /// <summary>Our endpoint answered 2xx: the network is back, so the resend backoff restarts from
-        /// its base and a cycle scheduled far out is brought forward. Main thread.</summary>
-        private static void onEndpointReachable()
+        /// <summary>A stored crash or bug report: what the spending cap holds instead of dropping.</summary>
+        private static bool isCapHoldable(PendingUpload item) =>
+            !item.IsLogPut && item.Durability == UploadDurability.WriteAhead && isProtectedPath(item.Path)
+            && !string.IsNullOrEmpty(item.FilePath);
+
+        /// <summary>Hold a crash or bug report refused by the spending cap until it lifts. Past
+        /// <see cref="MAX_CAP_HELD"/> it waits on disk for a later launch. Any thread.</summary>
+        private static void holdForCap(PendingUpload item)
         {
+            lock (_parkLock)
+            {
+                if (_capHeld.Count >= MAX_CAP_HELD || _capHeld.Contains(item)) return;
+                _capHeld.Add(item);
+            }
+        }
+
+        /// <summary>The server answered 402: hold crash and bug reports until the resume time it names,
+        /// judged on the server's clock (a long backoff when it names none), plus this client's share of
+        /// the spread. A later answer only extends the hold. One console line per hold. Main thread.</summary>
+        private static void startCapHold(string body)
+        {
+            var serverNow = DateTimeOffset.UtcNow.AddSeconds(TombstackHttp.OffsetSeconds);
+            double hold = TombstackSpendCap.HoldSeconds(body, serverNow);
+            // One share per hold: a fresh draw per refusal, keeping the latest time, drifted every client that
+            // kept talking to the top of the spread, so they all came back together.
+            if (_capReleaseAt <= 0) _capSpreadShare = _jitterRng.NextDouble();
+            double releaseAt = monotonic() + TombstackSpendCap.ReleaseDelaySeconds(hold, _capSpreadShare);
+            if (releaseAt > _capReleaseAt) _capReleaseAt = releaseAt;
+            if (_capWarned) return;
+            _capWarned = true;
+            TombstackLog.Warn("the studio's spending cap is reached (HTTP 402): the server accepts no new data until "
+                + TombstackSpendCap.DescribeResume(body) + ". Crash and bug reports stay on this device and are sent "
+                + "when it accepts data again; events, metrics and heartbeats refused meanwhile are dropped.");
+        }
+
+        /// <summary>The cap lifted (its resume time came, or the server accepted a request): send the held
+        /// reports again, each with a fresh retry budget. Main thread.</summary>
+        private static void releaseCapHeld()
+        {
+            _capReleaseAt = 0;
+            _capWarned = false;
+            PendingUpload[] held;
+            lock (_parkLock)
+            {
+                held = _capHeld.ToArray();
+                _capHeld.Clear();
+            }
+            for (int i = 0; i < held.Length; i++)
+            {
+                var item = held[i];
+                // Evicted from the offline queue meanwhile (counted as a drop then), or consent withdrawn.
+                if (string.IsNullOrEmpty(item.FilePath) || !mayUpload(item)) continue;
+                item.Attempt = 0;
+                enqueueOutbound(item);
+            }
+        }
+
+        /// <summary>Our endpoint answered 2xx: the network is back, so the resend backoff restarts from
+        /// its base and a cycle scheduled far out is brought forward. From a route the cap gates
+        /// (<paramref name="capGatedRoute"/>) it also means the spending cap no longer holds (the studio
+        /// raised it, or its period resumed): held reports go now. Main thread.</summary>
+        private static void onEndpointReachable(bool capGatedRoute)
+        {
+            if (capGatedRoute && _capReleaseAt > 0) releaseCapHeld();
             _parkDelaySeconds = PARK_BASE_DELAY_SECONDS;
             if (_parkedCount == 0) return;
             double soon = monotonic() + jittered(PARK_BASE_DELAY_SECONDS);
@@ -1557,6 +1818,10 @@ namespace AnkleBreaker.Tombstack
                 lock (_persistLock)
                 {
                     if (string.IsNullOrEmpty(_queueDir)) return;
+                    // Captured before a revoke: never written to disk. Checked under the spool lock, so a
+                    // purge on another thread either sees this file (and deletes it) or this check sees its
+                    // new epoch.
+                    if (!isConsentExempt(item) && item.ConsentEpoch != Volatile.Read(ref _consentEpoch)) return;
                     bool analytics = !isProtectedPath(item.Path);
                     // H3: analytics may fill only its share of the spool; the rest is reserved for crashes.
                     if (analytics && _persistedAnalytics.Count >= MAX_PERSISTED_ANALYTICS_FILES)
@@ -1642,7 +1907,7 @@ namespace AnkleBreaker.Tombstack
                 // pool, since this runs on the main thread after every delivered crash, bug report and
                 // pause batch. A file the process dies before deleting is re-sent next launch and
                 // de-duplicated server-side.
-                ThreadPool.QueueUserWorkItem(_deleteFileWork, path);
+                TombstackPlatform.RunInBackground(_deleteFileWork, path);
             }
             catch { /* best-effort; a leftover file is retried and de-duplicated server-side by ULID */ }
         }

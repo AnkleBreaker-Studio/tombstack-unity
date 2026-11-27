@@ -33,6 +33,11 @@ namespace AnkleBreaker.Tombstack
             public string Sha256;  // lowercase hex digest, echoed in "screenshot.sha256"
         }
 
+        // The server refuses a crash or bug report whose screenshot.size is above 16 MiB (crash-schema.ts,
+        // bugreport-schema.ts), and the SDK then deletes the whole report as invalid, the player's text
+        // included. A larger PNG (full resolution on a very large display) ships without the screenshot.
+        internal const int MAX_SCREENSHOT_BYTES = 16 * 1024 * 1024;
+
         // Throttle: at most one capture per window (guards exception storms). Monotonic seconds.
         private static double _lastCaptureAt = -1000.0;
 
@@ -110,8 +115,7 @@ namespace AnkleBreaker.Tombstack
                 {
                     byte[] png = ImageConversion.EncodeArrayToPNG(
                         frame.Pixels, frame.Format, (uint)frame.Width, (uint)frame.Height);
-                    if (png != null && png.Length > 0)
-                        shot = new Shot { Bytes = png, Size = png.Length, Sha256 = sha256Hex(png) };
+                    shot = toShot(png);
                 }
                 catch (Exception e)
                 {
@@ -121,7 +125,7 @@ namespace AnkleBreaker.Tombstack
             };
             try
             {
-                ThreadPool.QueueUserWorkItem(work);
+                TombstackPlatform.RunInBackground(work);
             }
             catch (Exception e)
             {
@@ -159,10 +163,7 @@ namespace AnkleBreaker.Tombstack
                     scaled = downscale(full, maxDimension);
                     if (scaled != null) src = scaled;
                 }
-                byte[] png = src.EncodeToPNG();
-                if (png != null && png.Length > 0)
-                    return new Shot { Bytes = png, Size = png.Length, Sha256 = sha256Hex(png) };
-                return null;
+                return toShot(src.EncodeToPNG());
             }
             catch (Exception e)
             {
@@ -206,6 +207,19 @@ namespace AnkleBreaker.Tombstack
                 TombstackLog.Warn("screenshot downscale failed: " + e.Message);
                 return null;
             }
+        }
+
+        /// <summary>The shot for an encoded PNG, or null when there is nothing or it is over
+        /// <see cref="MAX_SCREENSHOT_BYTES"/> (the report then ships without a screenshot). Any thread.</summary>
+        private static Shot? toShot(byte[] png)
+        {
+            if (png == null || png.Length == 0) return null;
+            if (png.Length > MAX_SCREENSHOT_BYTES)
+            {
+                TombstackLog.Warn($"screenshot not attached: {png.Length} bytes is over the {MAX_SCREENSHOT_BYTES}-byte limit (lower ScreenshotMaxDimension).");
+                return null;
+            }
+            return new Shot { Bytes = png, Size = png.Length, Sha256 = sha256Hex(png) };
         }
 
         private static string sha256Hex(byte[] bytes)

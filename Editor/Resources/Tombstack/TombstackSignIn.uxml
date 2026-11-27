@@ -5,7 +5,8 @@
     <ui:VisualElement name="signin-root" class="tmb-signin">
         <ui:VisualElement class="tmb-signin__panel">
             <ui:Label text="TOMBSTACK" class="tmb-wordmark" style="margin-bottom: 2px;" />
-            <ui:Label text="CRASH TELEMETRY FOR GAMES" class="tmb-eyebrow" style="margin-bottom: 16px;" />
+            <ui:Label text="CRASH TELEMETRY FOR GAMES" class="tmb-eyebrow" style="margin-bottom: 6px;" />
+            <ui:Label name="signin-host" text="" class="tmb-dim" style="margin-bottom: 16px;" />
 
             <ui:Label name="signin-error" text="" class="tmb-banner tmb-banner--error tmb-body hidden" />
 

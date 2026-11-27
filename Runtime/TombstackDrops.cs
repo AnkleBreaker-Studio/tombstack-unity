@@ -16,8 +16,11 @@ namespace AnkleBreaker.Tombstack
         /// <summary>The in-memory outbound queue hit its soft cap and evicted its oldest non-crash
         /// payload (an event/metric batch or a heartbeat) to stay bounded.</summary>
         OutboundQueueFull = 1,
-        /// <summary>The server answered 4xx (validation/auth/expired presign), so the payload is
-        /// poison and was discarded rather than retried forever.</summary>
+        /// <summary>The server answered 4xx and the payload was discarded rather than retried forever:
+        /// an invalid payload (400/413/422), an event/metric batch, heartbeat, pull or expired presign
+        /// refused, or a refused crash/bug report that had no copy on disk to wait in. Also a stored
+        /// report no launch could deliver within 90 days (TombstackBehaviour.MAX_SPOOL_RECORD_AGE_DAYS),
+        /// let go when the game starts.</summary>
         Rejected = 2,
         /// <summary>An event/metric batch buffer was full and overwrote its oldest item — the game is
         /// producing telemetry faster than it can be flushed.</summary>
@@ -80,7 +83,7 @@ namespace AnkleBreaker.Tombstack
         {
             "the offline queue is at its file cap, so crash/bug reports are no longer durable across a restart",
             "the outbound queue hit its cap and evicted its oldest non-crash payload",
-            "the server rejected the payload with a 4xx, so it was discarded instead of retried",
+            "the server rejected the payload with a 4xx, or a stored report could not be delivered within 90 days, so it was discarded instead of retried",
             "an event/metric batch buffer overflowed before it could be flushed",
             "this session is over its per-session budget for custom events and metrics; crashes, bug reports and heartbeats are unaffected",
             "an exception storm hit the crash-report rate limit, so further non-fatal crash reports this minute were not sent",

@@ -17,6 +17,7 @@ namespace AnkleBreaker.Tombstack.Editor
         private const float MIN_WIDTH = 520f;
         private const float MIN_HEIGHT = 480f;
         private const string NO_GAMES_CHOICE = "— no games —";
+        private const string NOT_LOADED_CHOICE = "— not loaded —";
 
         private Label _statusText;
         private VisualElement _statusDot;
@@ -42,6 +43,10 @@ namespace AnkleBreaker.Tombstack.Editor
 
         private TombstackHubDashboard _dashboard;
         private EditorMeData _me;
+        // The session _me was loaded for (server and sign-in): when either changes it is dropped, so the
+        // Hub never offers the studios of another server or account. Memory only, never serialized.
+        private string _meOrigin;
+        private string _meToken;
         private bool _busy;
 
         /// <summary>Open (or focus) the Hub window.</summary>
@@ -61,7 +66,8 @@ namespace AnkleBreaker.Tombstack.Editor
             _dashboard = new TombstackHubDashboard(rootVisualElement);
             TombstackSession.OnChanged += onSessionChanged;
             refreshState();
-            if (TombstackSession.IsSignedIn) loadStudios();
+            // Automatic: never prompts, and never sends credentials to an unconfirmed server.
+            if (TombstackSession.IsSignedIn) loadStudios(askUser: false);
         }
 
         private void OnDisable()
@@ -124,8 +130,10 @@ namespace AnkleBreaker.Tombstack.Editor
 
         private void onSessionChanged()
         {
+            // The project's server or its sign-in changed: what was loaded for the previous one no longer applies.
+            if (_me != null && !TombstackSession.IsCurrent(_meOrigin, _meToken)) dropLoadedStudios();
             refreshState();
-            if (TombstackSession.IsSignedIn && _me == null) loadStudios();
+            if (TombstackSession.IsSignedIn && _me == null) loadStudios(askUser: false);
         }
 
         /// <summary>Sync every panel/label with the current session + project link state.</summary>
@@ -149,8 +157,12 @@ namespace AnkleBreaker.Tombstack.Editor
             if (_linkedGameLabel != null)
                 _linkedGameLabel.text = linked ? $"{settings.GameName}  ({settings.StudioName})" : "Not linked";
             if (_tokenStateLabel != null)
-                _tokenStateLabel.text = hasToken ? "Present (tmb_…)" : "Missing";
-            if (_endpointLabel != null) _endpointLabel.text = settings.ResolveEndpoint();
+                _tokenStateLabel.text = TombstackConfigWriter.DescribeTokenState();
+            if (_endpointLabel != null)
+            {
+                bool confirmed = TombstackEndpointTrust.IsTrusted(settings.ResolveOrigin());
+                _endpointLabel.text = settings.ResolveEndpoint() + (confirmed ? "" : "  (not confirmed)");
+            }
             _unlinkButton?.SetEnabled(linked);
             _dashboard?.SyncLinkState();
         }
@@ -170,20 +182,41 @@ namespace AnkleBreaker.Tombstack.Editor
             _dashboard?.SetActive(dashboard);
         }
 
-        private async void loadStudios()
+        /// <param name="askUser">True only for a click: an unconfirmed server may then be confirmed
+        /// through a dialog. Automatic loads never prompt and send nothing to such a server.</param>
+        private async void loadStudios(bool askUser)
         {
             try
             {
                 showError(null);
-                var result = await TombstackEditorApi.GetMeAsync(TombstackSession.EditorToken);
+                if (!TombstackEndpointTrust.ConfirmCurrent(askUser))
+                {
+                    showError(TombstackEndpointTrust.NotConfirmedMessage(TombstackSession.ServerOrigin));
+                    return;
+                }
+                // The session this request belongs to: the server and the sign-in can change meanwhile.
+                var origin = TombstackSession.ServerOrigin;
+                var token = TombstackSession.EditorToken;
+                var result = await TombstackEditorApi.GetMeAsync(token);
                 if (this == null) return;
+                bool current = TombstackSession.IsCurrent(origin, token);
+                if (!result.Ok && result.Status == 401) TombstackSession.HandleUnauthorized(origin, token);
+                if (!current)
+                {
+                    // An answer for an earlier server or sign-in is neither shown nor kept. Load for the
+                    // current session unless the change already started that: one made by another Unity
+                    // process (EditorPrefs are per machine) raises no OnChanged in this one.
+                    if (_me == null && TombstackSession.IsSignedIn) loadStudios(askUser: false);
+                    return;
+                }
                 if (!result.Ok)
                 {
-                    if (result.Status == 401) TombstackSession.HandleUnauthorized();
                     showError(result.Error);
                     return;
                 }
                 _me = result.Data;
+                _meOrigin = origin;
+                _meToken = token;
                 populateStudioDropdown();
             }
             catch (System.Exception e)
@@ -205,6 +238,21 @@ namespace AnkleBreaker.Tombstack.Editor
             }
             _studioDropdown.choices = choices;
             if (choices.Count > 0) _studioDropdown.index = preselect;
+            populateGameDropdown();
+        }
+
+        /// <summary>Forget the studios loaded for an earlier server or sign-in, and stop showing their
+        /// names: the lists show a placeholder until the current session's load fills them.</summary>
+        private void dropLoadedStudios()
+        {
+            _me = null;
+            _meOrigin = null;
+            _meToken = null;
+            if (_studioDropdown != null)
+            {
+                _studioDropdown.choices = new List<string> { NOT_LOADED_CHOICE };
+                _studioDropdown.index = 0;
+            }
             populateGameDropdown();
         }
 
@@ -254,6 +302,12 @@ namespace AnkleBreaker.Tombstack.Editor
                 return;
             }
 
+            if (!TombstackEndpointTrust.ConfirmCurrent(askUser: true))
+            {
+                showError(TombstackEndpointTrust.NotConfirmedMessage(TombstackSession.ServerOrigin));
+                return;
+            }
+
             setBusy(true);
             showError(null);
             try
@@ -276,7 +330,7 @@ namespace AnkleBreaker.Tombstack.Editor
         private void onRefreshStudiosClicked(ClickEvent evt)
         {
             _me = null;
-            loadStudios();
+            loadStudios(askUser: true);
         }
 
         private void onUnlinkClicked(ClickEvent evt) => TombstackSession.UnlinkProject();

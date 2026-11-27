@@ -37,12 +37,31 @@ namespace AnkleBreaker.Tombstack.Editor
         /// <summary>True when this project is bound to a Tombstack game.</summary>
         public bool IsLinked => !string.IsNullOrEmpty(_gameId);
 
-        /// <summary>Effective base URL: the override when set, otherwise the default. No trailing slash.</summary>
+        /// <summary>
+        /// Effective base URL, no trailing slash: the override when it is a valid https URL (http only to a
+        /// loopback host), otherwise the default. An invalid override is ignored rather than followed: this
+        /// file is committed with the project, and the plugin talks to this URL. Credentials still go to a
+        /// non-default server only once the developer confirmed it (<see cref="TombstackEndpointTrust"/>).
+        /// </summary>
         public string ResolveEndpoint()
         {
-            var endpoint = string.IsNullOrEmpty(_endpointOverride) ? DEFAULT_ENDPOINT : _endpointOverride;
-            return endpoint.TrimEnd('/');
+            if (!string.IsNullOrEmpty(_endpointOverride)
+                && TombstackEndpointTrust.TryValidateBaseUrl(_endpointOverride, out var baseUrl, out _))
+                return baseUrl;
+            return DEFAULT_ENDPOINT.TrimEnd('/');
         }
+
+        /// <summary>Scheme, host and non-default port of <see cref="ResolveEndpoint"/>, lower case.</summary>
+        public string ResolveOrigin()
+        {
+            TombstackEndpointTrust.TryValidateBaseUrl(ResolveEndpoint(), out _, out var origin);
+            return origin;
+        }
+
+        /// <summary>True when an override is set but cannot be used (not https, or http to a remote host).</summary>
+        public bool HasInvalidEndpointOverride =>
+            !string.IsNullOrEmpty(_endpointOverride)
+            && !TombstackEndpointTrust.TryValidateBaseUrl(_endpointOverride, out _, out _);
 
         /// <summary>Bind this project to a studio + game and persist.</summary>
         /// <param name="studioId">Server studio id.</param>
